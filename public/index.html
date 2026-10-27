@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#fbf7f2" />
+  <meta name="description" content="Scan a Magic: The Gathering card and the exact printing is detected and added to your collection automatically." />
+  <title>MTG Collection Manager</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-main">
+      <h1 class="brand">MTG Collection Manager</h1>
+      <p class="lede">Add cards to your collection via image upload, live camera feed, or manual search.</p>
+    </div>
+    <p class="hero-account"><span id="who"></span></p>
+  </header>
+
+  <main class="layout">
+  <section id="scan">
+    <h2>Add cards to collection</h2>
+    <h3>By live camera feed</h3>
+    <p class="aside"><a class="cta" href="/camera.html">📷 Camera Mode →</a>
+
+    <h3>By name</h3>
+    <input id="q" placeholder="e.g. Lightning Bolt" size="30" />
+    <button id="search">Search</button>
+    <button id="clear" disabled>Clear</button>
+    <p><label class="foil-toggle"><input type="checkbox" id="searchfoil" /> ✨ Add as foil</label></p>
+    <div id="searchres"></div>
+
+
+
+    <h3>By image</h3>
+    <input type="file" id="file" accept="image/*" />
+    <span id="imgwrap"><img id="preview" alt="" hidden /><canvas id="ocrlayer" hidden></canvas><div id="tip" hidden></div></span>
+    <p id="quality" class="like-label" hidden></p>
+    <p><label class="foil-toggle"><input type="checkbox" id="foil" /> ✨ Add as foil</label></p>
+    <p><button id="detect" disabled>Process Image</button></p>
+
+    <div id="ocrread" hidden></div>
+
+    <div id="autoresult" hidden>
+      <h3>Added to your collection</h3>
+      <div id="autoadded"></div>
+    </div>
+
+    <div id="candresult" hidden>
+      <h3>Detected candidates</h3>
+      <div id="candidates"></div>
+    </div>
+
+
+  </section>
+
+  <section id="col">
+    <h2>View collection (<span id="count">0</span> total)</h2>
+    <p><a class="cta" href="/collection.html">Open the collection gallery →</a></p>
+    <div id="collection"></div>
+  </section>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    let currentImage = null;
+    let lastDetect = null;
+    let lastAuto = null;  // the server's report on what the last scan auto-added
+    let lastIdentified = null; // which card the last scan recognized, and how sure
+    let autoEntry = null; // { id, scryfall_id } of that entry, until it's removed
+    let boxes = [];
+
+    const AUTO_IDLE =
+      'Detect a card and the most likely printing is added to your collection automatically. '
+      + 'If the guess is wrong, pick another printing from the candidate list below, or manage '
+      + 'copies in the collection gallery.';
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+      });
+      if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); throw new Error('signed out'); }
+      if (!res.ok) {
+        let msg = res.status;
+        try { msg = (await res.json()).error || msg; } catch {}
+        throw new Error(msg);
+      }
+      return res.json();
+    }
+
+    /** Fill the hero account slot: Sign in (guest) vs. account name + Sign out. */
+    async function boot() {
+      // Identity first: an anonymous visitor is minted a throwaway guest
+      // collection here (Set-Cookie on the 200), so the cards they add below
+      // are already theirs. Afterwards renderWho() fills the top-right account
+      // slot — except on this page the slot refreshes on every collection load
+      // too, because the session can change in another tab while a scan sits open.
+      try { await api('/api/auth/guest', { method: 'POST' }); } catch (e) { if (String(e.message) === 'signed out') return; }
+      const me = await whoever();
+      if (me) renderWho(me);
+    }
+
+    /** Whoever owns this browser's collection right now. */
+    async function whoever() {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); return null; }
+        if (res.ok) return (await res.json()).user ?? null;
+      } catch { /* offline: the page still scans, slot stays empty */ }
+      return null;
+    }
+
+    /** Fill the top-right account slot for whoever `me` is (Sign in vs. name + Sign out). */
+    function renderWho(me) {
+      const box = $('#who');
+      if (!box) return;
+      box.innerHTML = me.isGuest
+        ? `<a class="who-btn" href="/login.html?next=${encodeURIComponent(location.pathname)}">Sign in</a>`
+        : `<span class="who-account"><span class="who-name">${escapeHtml(me.username || me.name)}</span><a href="#" id="logout">Sign out</a></span>`;
+      const out = $('#logout');
+      if (out) out.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* still gone from here */ }
+        location.replace('/login.html?next=' + encodeURIComponent(location.pathname));
+      });
+    }
+
+    function fileToDataUrl(file) {
+      return new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = rej;
+        fr.readAsDataURL(file);
+      });
+    }
+
+    $('#file').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      currentImage = await fileToDataUrl(f);
+      const img = $('#preview');
+      // Drop the previous detect's onload: it would redraw the OLD scan's
+      // boxes as soon as the new image finishes loading, undoing the clear.
+      img.onload = null;
+      img.alt = '';
+      img.src = currentImage;
+      img.hidden = false;
+      $('#detect').disabled = false;
+      $('#quality').hidden = true;
+      $('#candidates').innerHTML = '';
+      // These sections exist only after Detect & add has run on this image.
+      $('#autoresult').hidden = true;
+      $('#candresult').hidden = true;
+      // The panel describes the last scan; an earlier scan's card (if any) is
+      // still listed under "My collection", where it can be removed.
+      lastAuto = null;
+      autoEntry = null;
+      lastIdentified = null;
+      renderAuto();
+      clearOverlay();
+      renderOcrRead();
+    });
+
+    $('#detect').addEventListener('click', async () => {
+      try {
+        // autoAdd: the server stores the most likely printing in the same round
+        // trip and reports exactly what it added (or why it added nothing).
+        // foil: the manual toggle above — the copy lands as foil when checked.
+        const r = await api('/api/detect', {
+          method: 'POST',
+          body: JSON.stringify({ image: currentImage, autoAdd: true, foil: $('#foil').checked }),
+        });
+        lastDetect = r;
+        lastIdentified = r.identified || null;
+        // Zoom the preview to the card the box finder located (instead of the
+        // whole mostly-empty page), then overlay the OCR words onto it.
+        if (r.croppedImage) {
+          const img = $('#preview');
+          img.onload = () => drawOverlay(r);
+          img.src = r.croppedImage;
+          img.alt = 'Detected card (cropped from scan)';
+          if (img.complete) drawOverlay(r); // same src as last time: onload won't refire
+        }
+        showQuality(r.legibility, r);
+        // What PaddleOCR read, next to the preview it was read from.
+        renderOcrRead(r);
+        // Show which card the scan put in the collection (copy stepper only).
+        lastAuto = r.autoAdded
+          ? { ...r.autoAdded, source: 'auto', baseline: baselineOf(r.autoAdded) }
+          : null;
+        autoEntry = lastAuto?.added && lastAuto.entry
+          ? { id: lastAuto.entry.id, scryfall_id: lastAuto.candidate?.scryfall_id }
+          : null;
+        renderAuto();
+        renderCandidates('#candidates', r.candidates, { flow: 'scan' });
+        $('#autoresult').hidden = false;
+        $('#candresult').hidden = false;
+        if (autoEntry) loadCollection().catch((e) => console.error(e));
+      } catch (err) {
+        alert('Detect failed: ' + err.message);
+      }
+    });
+
+    $('#search').addEventListener('click', async () => {
+      const q = $('#q').value.trim();
+      if (!q) return;
+      try {
+        const r = await api('/api/printings?name=' + encodeURIComponent(q));
+        renderCandidates('#searchres', r.printings);
+        $('#clear').disabled = false;
+      } catch (err) {
+        alert('Search failed: ' + err.message);
+      }
+    });
+
+    $('#clear').addEventListener('click', () => {
+      $('#q').value = '';
+      $('#searchres').innerHTML = '';
+      $('#clear').disabled = true;
+    });
+
+    /**
+     * A photo of a card can simply be too small for the printed number to be in
+     * the image at all, in which case detection finds nothing and says nothing
+     * about why. `legibility` (measured server-side in src/ocr.js) is the height
+     * of that number in source pixels; under the minimum, say so once in plain
+     * language — the fix is to get closer, not to pick a different printing.
+     * A readable number needs no note at all.
+     */
+    function showQuality(l, r) {
+      const el = $('#quality');
+      // Skip the "move closer" warning when identification actually succeeded
+      // with high confidence (e.g. Oran-Rief Ooze at 98%): the rough geometry
+      // estimate fires on small card photos even when PaddleOCR read the cues
+      // fine, so it must not contradict a confident detection.
+      const confident = (r?.identified?.confidence ?? 0) >= 0.9
+        || ((r?.candidates?.[0]?.likelihood ?? 0) >= 0.9);
+      const tooSmall = !!l && l.textPx != null && !l.ok && !confident;
+      el.hidden = !tooSmall;
+      el.className = tooSmall ? 'like-label warn' : 'like-label';
+      if (tooSmall) {
+        el.textContent = `⚠️ Low certainty, try moving card closer.`;
+      }
+    }
+
+    // ---- What PaddleOCR read -------------------------------------------------
+    // Just the cues that drove detection and auto-add (set, collector number,
+    // name), plus how long the pass took — shown next to the preview they were
+    // read from. PaddleOCR is the only OCR engine, so this is a single readout
+    // — not a per-engine comparison.
+
+    function renderOcrRead(r = lastDetect) {
+      const box = $('#ocrread');
+      box.innerHTML = '';
+      // No detection yet: keep the panel hidden rather than showing a stale or
+      // empty readout.
+      if (!r) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = ocrReadout({
+        parsed: r.parsed,
+        words: r.words,
+        ms: r.ms,
+      });
+    }
+
+    /** The readout: cues read stacked vertically, plus timing/word count. */
+    function ocrReadout(e) {
+      const p = e.parsed || {};
+      // Vertical stack: name on top, set in the middle, number on the bottom.
+      const lines = [];
+      const name = (p.nameCandidates || []).find(Boolean);
+      if (name) lines.push(`name "${name}"`);
+      if (p.setCode) lines.push(`set ${p.setCode}${p.setValidated ? ' ✓' : ' ✗'}`);
+      if (p.collectorNumber) lines.push(`#${p.collectorNumber}`);
+      const bits = [];
+      if (e.ms != null) bits.push(`${Math.round(e.ms)} ms`);
+      if (e.words) bits.push(`${e.words.length} filtered words`);
+      return `<div class="ocr"><h4>Cues read (via PaddleOCR) <span class="meta">${escapeHtml(bits.join(' · '))}</span></h4>`
+        + (lines.length ? lines.map((l) => `<div class="meta">${escapeHtml(l)}</div>`).join('') : `<div class="meta">none</div>`) + `</div>`;
+    }
+
+    // ---- The auto-added card: what landed in the collection --------------------
+    // States: idle (nothing scanned yet), added (card + remove), and the
+    // reasons nothing was added (no match / too uncertain / failed).
+    // Corrections happen from the candidate list below (scan flow) or manual
+    // search — there is no separate "pick another printing" shortcut.
+
+    function renderAuto() {
+      const box = $('#autoadded');
+      box.innerHTML = '';
+      if (!lastAuto) { box.innerHTML = `<p class="like-label">${AUTO_IDLE}</p>`; return; }
+      if (!lastAuto.added) { box.innerHTML = `<p class="like-label">${escapeHtml(autoReason(lastAuto))}</p>`; return; }
+      box.appendChild(addedEl(lastAuto));
+    }
+
+    /** Plain-language explanation of what the server did with the best match. */
+    function autoReason(a) {
+      // A card recognized from its title, with no way to tell which printing it
+      // is, is a different situation from "the best guess was weak": the card is
+      // known, only the version is not. Say which, instead of quoting a low
+      // likelihood that would read as uncertainty about the card itself.
+      const id = lastIdentified;
+      const versions = id && id.printings > 1
+        ? ` I read the title as "${id.name}" (${Math.round(id.confidence * 100)}% confident), but it has ${id.printings} printings `
+          + 'and the small print on the card is too blurry to say which, so nothing was added automatically. Pick the printing below.'
+        : null;
+      if (a.reason === 'low-likelihood' && versions) return versions;
+      const best = a.candidate ? `${a.candidate.name} (${Math.round((a.likelihood ?? 0) * 100)}% likely)` : '';
+      const bar = Math.round((a.threshold ?? 0) * 100);
+      switch (a.reason) {
+        case 'no-match':
+          return 'No card matched this scan, so nothing was added. Pick a printing below or search by name.';
+        case 'low-likelihood':
+          return `Best guess ${best} is under the ${bar}% auto-add bar, so nothing was added. Confirm the right printing below.`;
+        case 'error':
+          return `Couldn't add the best match automatically (${a.message}). Pick a printing below instead.`;
+        case 'removed':
+          return `Removed ${a.candidate?.name ?? 'that card'} from your collection. If this scan is a different card, pick the right printing below.`;
+        default:
+          return 'Nothing was added automatically.';
+      }
+    }
+
+    /** Details of the printing the last scan put in the collection. */
+    function addedEl(a) {
+      const c = a.candidate;
+      const d = document.createElement('div');
+      d.className = 'candidate top';
+      const img = c.image_url ? `<img class="thumb" src="${c.image_url}" alt="" />` : '';
+      const qty = a.entry?.quantity ?? 1;
+      // Copies held *before* this scan: the stepper may undo this scan's copy
+      // but never touch what was already in the collection (and there is no
+      // "remove all" here — full management lives in the collection gallery).
+      const baseline = a.baseline ?? 0;
+      const status = a.source === 'auto' ? '✅ added automatically' : '✅ added (you picked this printing)';
+      const foil = !!a.entry?.foil;
+      const bits = [];
+      if (foil) bits.push('foil');
+      if (a.likelihood != null) bits.push(`${Math.round(a.likelihood * 100)}% likely`);
+      // A foil copy is worth its own number: prefer the foil price when the
+      // toggle added this card as foil.
+      const price = foil ? (c.prices?.usd_foil ?? c.prices?.usd) : c.prices?.usd;
+      d.innerHTML =
+        img +
+        `<div><strong>${escapeHtml(c.name)}</strong><br/>` +
+        `${escapeHtml(c.set_name)} #${escapeHtml(c.collector_number)}<br/>` +
+        `USD ${price ?? '—'}${c.prices?.eur ? ` · EUR ${c.prices.eur}` : ''}</div>` +
+        `<p><span class="badge${foil ? ' foil' : ''}">${escapeHtml(status)}</span>` +
+        `<span class="like-label"> ${escapeHtml(bits.join(' · '))}</span></p>` +
+        // One segmented control: ◀ | count | ▶. The middle is a real input so
+        // the total can be typed; values are clamped to `baseline` on commit.
+        `<p class="qtystep">` +
+        `<button class="dec"${qty > baseline ? '' : ' disabled'} aria-label="Remove this scan's copy">◀</button>` +
+        `<input class="qty" type="number" inputmode="numeric" min="${Math.max(baseline, 0)}" value="${qty}" ` +
+        `aria-label="Copies in collection" />` +
+        `<button class="addmore" aria-label="Add a copy">▶</button></p>`;
+      d.querySelector('.dec').addEventListener('click', () => adjustAutoAdded(-1));
+      d.querySelector('.addmore').addEventListener('click', () => adjustAutoAdded(1));
+      const input = d.querySelector('.qty');
+      const commit = () => {
+        const raw = String(input.value).trim();
+        // Blank or garbage → restore what the server has.
+        if (raw === '' || !Number.isFinite(Math.floor(Number(raw)))) { input.value = String(qty); return; }
+        // Typed values are clamped to `baseline` — pre-existing copies are not
+        // editable from this page.
+        const target = Math.max(baseline, Math.floor(Number(raw)));
+        if (target === qty) { input.value = String(qty); return; }
+        setAutoAddedQty(target);
+      };
+      input.addEventListener('change', commit);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+      // If nothing committed (e.g. Esc), put the real count back.
+      input.addEventListener('blur', () => { if (input.value !== String(qty)) input.value = String(qty); });
+      return d;
+    }
+
+    /** Copies held before this scan's add = current quantity − what it added. */
+    function baselineOf(res) {
+      return Math.max(0, (res.entry?.quantity ?? 1) - (res.addedCopies ?? 1));
+    }
+
+    /** Remember a printing as the one the last scan stored (auto-added or picked). */
+    function setAdded(card, res, source) {
+      lastAuto = {
+        added: true,
+        candidate: card,
+        entry: res.entry ?? null,
+        likelihood: card.likelihood ?? null,
+        source,
+        baseline: baselineOf(res),
+      };
+      autoEntry = res.entry ? { id: res.entry.id, scryfall_id: card.scryfall_id } : null;
+      renderAuto();
+      renderDetected();
+      loadCollection().catch((e) => console.error(e));
+    }
+
+    /** Apply an { entry, removed? } answer from any copy-changing endpoint. */
+    function applyEntryUpdate(res) {
+      if (res.removed || !res.entry) {
+        autoEntry = null;
+        if (lastAuto) lastAuto = { ...lastAuto, added: false, reason: 'removed' };
+        renderAuto();
+        renderDetected();
+      } else if (lastAuto) {
+        lastAuto = { ...lastAuto, entry: res.entry };
+        renderAuto();
+      }
+      loadCollection().catch((e) => console.error(e));
+    }
+
+    /**
+     * Step the auto-added entry's copy count. −1 undoes this scan's copy; it is
+     * a no-op once the count is back at `baseline` (copies that were already in
+     * the collection before this scan are not removable from this page), and
+     * hitting zero from baseline 0 removes the row entirely.
+     */
+    async function adjustAutoAdded(delta) {
+      if (!autoEntry?.id) return;
+      const qty = lastAuto?.entry?.quantity ?? 1;
+      if (delta < 0 && qty <= (lastAuto?.baseline ?? 0)) return;
+      try {
+        const res = delta > 0
+          ? await api('/api/collection/' + autoEntry.id, { method: 'PATCH', body: JSON.stringify({ copies: 1 }) })
+          : await api('/api/collection/' + autoEntry.id + '/decrement', { method: 'POST', body: JSON.stringify({ n: 1 }) });
+        applyEntryUpdate(res);
+      } catch (err) {
+        alert('Update failed: ' + err.message);
+      }
+    }
+
+    /** Set the exact typed total (PUT), clamped to `baseline` before sending. */
+    async function setAutoAddedQty(target) {
+      if (!autoEntry?.id) return;
+      const baseline = lastAuto?.baseline ?? 0;
+      const qty = Math.max(baseline, Math.floor(Number(target)) || 0);
+      try {
+        const res = await api('/api/collection/' + autoEntry.id, {
+          method: 'PUT', body: JSON.stringify({ quantity: qty }),
+        });
+        applyEntryUpdate(res);
+      } catch (err) {
+        alert('Update failed: ' + err.message);
+        renderAuto(); // restore the previous count in the input
+      }
+    }
+
+    /** Re-draw the candidate list of the current scan (badges + button labels). */
+    function renderDetected() {
+      if (lastDetect) renderCandidates('#candidates', lastDetect.candidates, { flow: 'scan' });
+    }
+
+    async function addCandidate(card, source = 'manual') {
+      try {
+        // Each flow has its own foil toggle: the scan section's checkbox for
+        // scan picks, the search section's for name-search adds.
+        const foil = source === 'scan' ? $('#foil').checked : $('#searchfoil').checked;
+        const res = await api('/api/collection', { method: 'POST', body: JSON.stringify({ ...card, foil }) });
+        if (source === 'scan') setAdded(card, res, 'manual'); // confirmed by hand
+        else loadCollection();
+      } catch (err) {
+        alert('Add failed: ' + err.message);
+      }
+    }
+
+    /** Swap the card the scan added for the printing the user picked. */
+    async function replaceWith(card) {
+      const prev = autoEntry;
+      try {
+        // The foil checkbox of the scan section governs the replacement too.
+        const res = await api('/api/collection', {
+          method: 'POST', body: JSON.stringify({ ...card, foil: $('#foil').checked }),
+        });
+        if (prev?.id) await api('/api/collection/' + prev.id, { method: 'DELETE' });
+        setAdded(card, res, 'manual');
+      } catch (err) {
+        alert('Replace failed: ' + err.message);
+        loadCollection().catch((e) => console.error(e));
+        renderDetected();
+      }
+    }
+
+    // ---- Candidate list ------------------------------------------------------
+
+    function renderCandidates(sel, list, { flow = 'manual' } = {}) {
+      const box = $(sel);
+      box.innerHTML = '';
+      // One scan = one card: while a printing from this scan sits in the
+      // collection, picking another one swaps it out instead of adding a second.
+      const swap = flow === 'scan' && !!autoEntry;
+      (list || []).forEach((c, i) => {
+        // First entry is our best guess — but only when it carries a likelihood
+        // (manual "add by name" results don't).
+        const bestGuess = i === 0 && c.likelihood != null;
+        const inCollection = swap && c.scryfall_id === autoEntry.scryfall_id;
+        box.appendChild(candidateEl(c, {
+          bestGuess,
+          badge: inCollection ? '✓ in your collection' : null,
+          action: inCollection ? null : {
+            label: swap ? 'Use this instead' : 'Add to collection',
+            onClick: (card) => (swap ? replaceWith(card) : addCandidate(card, flow)),
+          },
+        }));
+      });
+      if (!list || !list.length) box.innerHTML = '<p><em>No candidates.</em></p>';
+    }
+
+    function candidateEl(c, { bestGuess = false, badge = null, action = null } = {}) {
+      const d = document.createElement('div');
+      d.className = 'candidate' + (bestGuess ? ' top' : '');
+      const img = c.image_url ? `<img class="thumb" src="${c.image_url}" alt="" />` : '';
+      const pct = c.likelihood == null ? null : Math.round(c.likelihood * 100);
+      const like = pct == null ? '' :
+        `<div class="like" title="Relative likelihood from the OCR cues (set/number agreement + name legibility) — not a calibrated probability.">` +
+        `<i style="width:${pct}%"></i></div>` +
+        `<div class="like-label">${pct}% likely$</div>`;
+      // Foil prices ride along so the "Add as foil" toggle below is priced honestly.
+      const foilPrice = c.prices?.usd_foil != null ? ` · foil USD ${c.prices.usd_foil}` : '';
+      d.innerHTML =
+        img +
+        `<div><strong>${escapeHtml(c.name)}</strong><br/>` +
+        `${escapeHtml(c.set_name)} #${escapeHtml(c.collector_number)}<br/>` +
+        `USD ${c.prices?.usd ?? '—'}${foilPrice}${c.prices?.eur ? ` · EUR ${c.prices.eur}` : ''}${like}</div>` +
+        (badge ? `<p><span class="badge">${escapeHtml(badge)}</span></p>` : '') +
+        (action ? `<p><button class="add">${escapeHtml(action.label)}</button></p>` : '');
+      if (action) d.querySelector('.add').addEventListener('click', () => action.onClick(c));
+      return d;
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function loadCollection() {
+      const list = await api('/api/collection');
+      const me = await whoever().catch(() => null);
+      if (me) renderWho(me);
+      const copies = (c) => Math.max(1, Number(c.quantity ?? 1) || 1);
+      const totalCopies = list.reduce((s, c) => s + copies(c), 0);
+      $('#count').textContent = totalCopies;
+      const box = $('#collection');
+      box.innerHTML = '';
+      if (!list.length) { box.innerHTML = '<p><em>Nothing yet.</em></p>'; return; }
+      // Main page spotlights only the single most expensive card (full
+      // management — copies included — lives in the collection gallery).
+      const price = (c) => (c.price_usd == null ? null : Number(c.price_usd));
+      const top = [...list].sort((a, b) => {
+        const x = price(a), y = price(b);
+        if (x == null && y == null) return 0;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return y - x;
+      })[0];
+      const d = document.createElement('div');
+      const fromScan = !!autoEntry && top.id === autoEntry.id;
+      d.className = 'candidate' + (fromScan ? ' top' : '');
+      const img = top.image_url ? `<img class="thumb" src="${top.image_url}" alt="" />` : '';
+      const held = copies(top);
+      d.innerHTML =
+        img +
+        `<div><strong>${escapeHtml(top.name)}</strong><br/>` +
+        `${escapeHtml(top.set_name)} #${escapeHtml(top.collector_number)}<br/>` +
+        `USD ${top.price_usd ?? '—'} · ${held === 1 ? '1 in collection' : `${held} in collection`}</div>` +
+        (top.foil ? '<p><span class="badge foil">✨ foil</span></p>' : '') +
+        (fromScan ? '<p><span class="badge">✓ from the last scan</span></p>' : '');
+      box.appendChild(d);
+    }
+    // ---- OCR overlay: draw the recognized word boxes onto the cropped card ----
+    function clearOverlay() {
+      const cv = $('#ocrlayer');
+      const ctx = cv.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
+      cv.hidden = true;
+      $('#tip').hidden = true;
+      boxes = [];
+      lastDetect = null;
+    }
+
+    function drawOverlay(r) {
+      const img = $('#preview'), cv = $('#ocrlayer');
+      if (!r.ocrSize || !r.words || !img.clientWidth) { cv.hidden = true; return; }
+      const W = img.clientWidth, H = img.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      cv.hidden = false;
+      cv.width = Math.round(W * dpr);
+      cv.height = Math.round(H * dpr);
+      cv.style.width = W + 'px';
+      cv.style.height = H + 'px';
+      const ctx = cv.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+
+      // Word boxes, scaled from the OCR image space to the displayed size.
+      const sx = W / r.ocrSize.width, sy = H / r.ocrSize.height;
+      const confColor = (c) => (c >= 90 ? '#16a34a' : c >= 70 ? '#d97706' : '#dc2626');
+      boxes = [];
+      ctx.lineWidth = 1;
+      for (const w of r.words) {
+        const b = {
+          x: w.x0 * sx, y: w.y0 * sy,
+          w: Math.max(1, (w.x1 - w.x0) * sx), h: Math.max(1, (w.y1 - w.y0) * sy),
+          text: w.text, conf: w.conf,
+        };
+        boxes.push(b);
+        ctx.strokeStyle = confColor(w.conf);
+        ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w, b.h);
+      }
+
+      // The cues that drove detection: name row (blue), set code (purple) and
+      // collector number (orange), each with a small label.
+      const kindColor = { name: '#2563eb', set: '#9333ea', number: '#ea580c' };
+      ctx.lineWidth = 2;
+      for (const m of r.parsed?.marks || []) {
+        const color = kindColor[m.kind] || '#111';
+        const x = m.x0 * sx, y = m.y0 * sy;
+        const w = (m.x1 - m.x0) * sx, h = (m.y1 - m.y0) * sy;
+        ctx.strokeStyle = color;
+        ctx.strokeRect(x, y, w, h);
+        if (m.label) {
+          ctx.font = 'bold 11px system-ui, sans-serif';
+          const tw = ctx.measureText(m.label).width;
+          const ly = Math.max(0, y - 14);
+          ctx.fillStyle = color;
+          ctx.fillRect(x, ly, tw + 8, 14);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(m.label, x + 4, ly + 11);
+        }
+      }
+    }
+
+    // Hovering a box shows the word PaddleOCR read there, plus its confidence.
+    $('#imgwrap').addEventListener('mousemove', (e) => {
+      const tip = $('#tip'), img = $('#preview');
+      const rect = img.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      let hit = null;
+      for (let i = boxes.length - 1; i >= 0; i--) {
+        const b = boxes[i];
+        if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) { hit = b; break; }
+      }
+      if (hit && hit.text) {
+        tip.hidden = false;
+        tip.textContent = `${hit.text} · ${Math.round(hit.conf)}%`;
+        tip.style.left = Math.min(mx + 12, Math.max(0, rect.width - 80)) + 'px';
+        tip.style.top = (my + 14) + 'px';
+      } else {
+        tip.hidden = true;
+      }
+    });
+    $('#imgwrap').addEventListener('mouseleave', () => { $('#tip').hidden = true; });
+    window.addEventListener('resize', () => { if (lastDetect) drawOverlay(lastDetect); });
+
+    renderAuto();
+    loadCollection().catch((e) => console.error(e));
+    boot().catch((e) => console.error(e));
+  </script>
+</body>
+</html>

@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#fbf7f2" />
+  <meta name="description" content="Browse your Magic: The Gathering collection — filter by set, sort by price, and click a card to see it full size." />
+  <title>MTG Collection Manager collection</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-main">
+      <h1 class="brand">MTG Collection Manager <span class="sub">my collection</span></h1>
+      <p class="lede">View your collection, and explore prices.</p>
+      <p class="aside"><a class="cta" href="/">← Home</a></p>
+    </div>
+    <p class="hero-account"><span id="who"></span></p>
+  </header>
+
+  <section id="controls">
+    <div class="controls">
+      <label>Set
+        <select id="fset"><option value="">All sets</option></select>
+      </label>
+      <label>Sort
+        <select id="fsort">
+          <option value="name">Name (A–Z)</option>
+          <option value="price-desc" selected>Price (high → low)</option>
+          <option value="price-asc">Price (low → high)</option>
+          <option value="added">Recently added</option>
+        </select>
+      </label>
+      <label>Finish
+        <select id="ffinish">
+          <option value="">All</option>
+          <option value="foil">Foil</option>
+          <option value="nonfoil">Non-foil</option>
+        </select>
+      </label>
+      <label>Search
+        <input id="fq" type="search" placeholder="card name" autocomplete="off" />
+      </label>
+      <span class="stat" id="stat"></span>
+    </div>
+  </section>
+
+  <section id="value-wrap" hidden>
+    <h3>Collection value over time</h3>
+    <div id="portfolio"><p class="like-label">Loading price history…</p></div>
+  </section>
+
+  <section id="grid-wrap">
+    <div id="grid"></div>
+    <p id="empty" class="like-label" hidden>No cards match these filters.</p>
+  </section>
+
+  <div id="lightbox" hidden></div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // price is a REAL column or null; guard null before Number() (which gives 0).
+    const usd = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+    const money = (v) => (v == null ? '—' : 'USD ' + v.toFixed(2));
+
+    let all = []; // every collection entry, straight from the API
+
+    async function load() {
+      // Identity first: an anonymous visitor is minted a throwaway guest
+      // collection here (Set-Cookie on the 200), so the cards they add below
+      // are already theirs. Afterwards whoever() fills the top-right account
+      // slot. The landing page says `?merged=N` out loud once a guest signs in and N rows
+      // come across — see mergedNote() below.
+      await guest();
+      const me = await whoever();
+      if (!me) return; // signed out between calls: whoever() already redirected
+      const res = await fetch('/api/collection');
+      if (!res.ok) throw new Error('the server returned ' + res.status);
+      all = await res.json();
+      buildSetFilter();
+      render();
+      renderPortfolio();
+      mergedNote();
+    }
+
+    /** Mint-or-reuse the guest session this browser collects under. */
+    async function guest() {
+      const res = await fetch('/api/auth/guest', { method: 'POST' });
+      if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); return; }
+      await res.json().catch(() => ({}));
+    }
+
+    /** Fill the hero account slot: Sign in (guest) vs. account name + Sign out. */
+    async function whoever() {
+      const box = $('#who');
+      if (!box) return null;
+      let me = null;
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); return null; }
+        if (res.ok) me = (await res.json()).user ?? null;
+      } catch { /* offline: leave the page usable, slot stays empty */ }
+      if (!me) return null;
+      box.innerHTML = me.isGuest
+        ? `<a class="who-btn" href="/login.html?next=${encodeURIComponent(location.pathname)}">Sign in</a>`
+        : `<span class="who-account"><span class="who-name">${escapeHtml(me.username || me.name)}</span><a href="#" id="logout">Sign out</a></span>`;
+      const out = $('#logout');
+      if (out) out.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { /* still gone from here */ }
+        location.replace('/login.html?next=' + encodeURIComponent(location.pathname));
+      });
+      return me;
+    }
+
+    /**
+     * After a login that folded a guest collection in, the landing page says
+     * `?merged=N` (rows, the same number the badge count went up by). The value
+     * is read here, the parameter stripped, and the message woven into the
+     * stat line so it reads as one sentence, not a banner.
+     */
+    function mergedNote() {
+      let n = 0;
+      try {
+        const url = new URL(location.href);
+        n = Math.max(0, Math.floor(Number(url.searchParams.get('merged')) || 0));
+        if (n > 0) {
+          url.searchParams.delete('merged');
+          history.replaceState(null, '', url.pathname + url.search + url.hash);
+        }
+      } catch { return; }
+      if (n > 0) $('#stat').textContent = `Merged ${n} guest ${n === 1 ? 'card' : 'cards'} into your collection · ` + $('#stat').textContent;
+    }
+
+    /** Total-value chart from /api/prices/portfolio (today matters too). */
+    async function renderPortfolio() {
+      const box = $('#portfolio');
+      const wrap = $('#value-wrap');
+      let rows = [];
+      try {
+        const res = await fetch('/api/prices/portfolio');
+        if (res.ok) rows = await res.json();
+      } catch { /* the section simply stays out of the way */ }
+      // Keep each snapshot's day with its value: the x axis labels real dates,
+      // not indexes, so a gap in the series still reads correctly.
+      const pts = rows
+        .map((p) => ({ day: p.day, v: Number(p.total_usd) }))
+        .filter((p) => Number.isFinite(p.v));
+      if (!pts.length) {
+        wrap.hidden = true; // nothing priced yet
+        return;
+      }
+      const vals = pts.map((p) => p.v);
+      const first = vals[0], last = vals[vals.length - 1];
+      const d = last - first;
+      wrap.hidden = false;
+      box.innerHTML =
+        (pts.length > 1 ? areaChart(pts) : '') +
+        `<p class="like-label"><strong>USD ${last.toFixed(2)}</strong>` +
+        (pts.length > 1
+          ? ` ${d >= 0 ? '▲' : '▼'} <span class="delta${d < 0 ? ' down' : ''}">${d >= 0 ? '+' : ''}USD ${d.toFixed(2)} since ${escapeHtml(pts[0].day)}</span>`
+          : ` · tracking daily — the chart appears with the second snapshot`) +
+        `</p>`;
+    }
+
+    /**
+     * Round x "outward" to 1, 2, 5 or 10 × 10ⁿ — the building block of a
+     * readable axis (never 3.7-unit gridlines).
+     */
+    function niceNum(x, round) {
+      const mag = Math.pow(10, Math.floor(Math.log10(x)));
+      const f = x / mag;
+      return (round
+        ? (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10)
+        : (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10)) * mag;
+    }
+
+    /**
+     * Axis bounds for [min, max]: nice round endpoints with ~4 ticks between
+     * them. A flat series is padded so the scale never divides by zero, and a
+     * flat zero series starts at 0 instead of dipping below it.
+     */
+    function niceTicks(min, max) {
+      if (!(max > min)) {
+        const pad = Math.max(Math.abs(max) * 0.1, 1);
+        if (min > 0) min -= pad;
+        max += pad;
+      }
+      const step = niceNum((max - min) / 3, true);
+      const lo = Math.floor(min / step) * step;
+      const hi = Math.ceil(max / step) * step;
+      const n = Math.max(1, Math.round((hi - lo) / step));
+      const ticks = Array.from({ length: n + 1 }, (_, i) => Number((lo + i * step).toFixed(6)));
+      return { lo, hi, step, ticks };
+    }
+
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    /** "2026-10-04" → "Oct 4" (with a short year once the series crosses years). */
+    function fmtDay(day, withYear) {
+      const s = String(day ?? '');
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+      if (!m) return s;
+      return `${MONTHS[+m[2] - 1]} ${+m[3]}${withYear ? ` '${s.slice(2, 4)}` : ''}`;
+    }
+
+    /**
+     * Area chart for a series of `{ day, v }` points, with labelled axes.
+     * Inline SVG, no library: the plot stretches to the container
+     * (preserveAspectRatio="none"), so the tick labels are HTML around it —
+     * SVG <text> would be squashed along with the geometry. Y gets "nice"
+     * round ticks on gridlines, X the snapshot dates with tick marks.
+     * `h` (viewBox height) must match the CSS height of `.chart`.
+     */
+    function areaChart(points, { w = 560, h = 120 } = {}) {
+      const vals = points.map((p) => p.v);
+      const { step: yStep, ticks } = niceTicks(Math.min(...vals), Math.max(...vals));
+      const lo = ticks[0], hi = ticks[ticks.length - 1];
+      const top = 10, bottom = h - 6; // data band; `bottom` doubles as the x axis
+      const yv = (v) => top + ((hi - v) / (hi - lo)) * (bottom - top);
+      const y = (v) => yv(v).toFixed(1);
+      const step = w / (points.length - 1);
+      const line = vals.map((v, i) => `${(i * step).toFixed(1)},${y(v)}`).join(' ');
+
+      // Up to five date labels across the axis, both ends always included.
+      const want = Math.min(5, points.length);
+      const idx = [];
+      for (let k = 0; k < want; k++) {
+        const i = Math.round((k * (points.length - 1)) / (want - 1));
+        if (!idx.includes(i)) idx.push(i);
+      }
+      const dayOf = (i) => String(points[i].day ?? '');
+      const withYear = dayOf(0).slice(0, 4) !== dayOf(points.length - 1).slice(0, 4);
+      const xPct = (i) => ((i / (points.length - 1)) * 100).toFixed(2);
+
+      // Decimal places: enough to tell neighbouring ticks apart, and never
+      // fewer than 2 below a dollar (so $0.50, not $0.5 — and never a column
+      // of $0.00 when the whole axis is measured in cents).
+      let dec = 0;
+      while (dec < 6 && Math.abs(yStep * 10 ** dec - Math.round(yStep * 10 ** dec)) > 1e-6) dec++;
+      if (yStep < 1) dec = Math.max(dec, 2);
+      const fmt = (v) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+
+      return (
+        `<div class="chart-frame">` +
+        `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="collection value chart">` +
+        // gridlines: every tick except the lowest, which is the baseline itself
+        ticks.slice(1).map((t) => `<line class="grid" x1="0" y1="${y(t)}" x2="${w}" y2="${y(t)}" />`).join('') +
+        `<polygon points="0,${bottom} ${line} ${w},${bottom}" fill="rgba(200,90,52,0.12)" stroke="none" />` +
+        `<polyline points="${line}" fill="none" stroke="#c85a34" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />` +
+        `<line class="axis" x1="0" y1="${bottom}" x2="${w}" y2="${bottom}" />` +
+        idx.map((i) => {
+          const x = (i * step).toFixed(1);
+          return `<line class="axis" x1="${x}" y1="${bottom}" x2="${x}" y2="${bottom + 4}" />`;
+        }).join('') +
+        `</svg>` +
+        `<div class="axis-y">` +
+        // ticks reversed so the DOM reads top-to-bottom, like the axis itself
+        [...ticks].reverse().map((t) => `<span style="top:${((yv(t) / h) * 100).toFixed(2)}%">${fmt(t)}</span>`).join('') +
+        `</div>` +
+        `<div class="axis-x">` +
+        idx.map((i) => `<span style="left:${xPct(i)}%">${escapeHtml(fmtDay(points[i].day, withYear))}</span>`).join('') +
+        `</div>` +
+        `</div>`
+      );
+    }
+
+    /** One <option> per distinct set actually present, with its card count. */
+    function buildSetFilter() {
+      const seen = new Map();
+      for (const c of all) {
+        const key = c.set_code || c.set_name || '';
+        if (!seen.has(key)) seen.set(key, { key, name: c.set_name || c.set_code || 'Unknown set', n: 0 });
+        seen.get(key).n++;
+      }
+      const sel = $('#fset');
+      const keep = sel.value;
+      sel.innerHTML = '<option value="">All sets</option>';
+      for (const s of [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+        const o = document.createElement('option');
+        o.value = s.key;
+        o.textContent = `${s.name} — ${s.n}`;
+        sel.appendChild(o);
+      }
+      sel.value = seen.has(keep) ? keep : '';
+    }
+
+    /** Apply the current filters, then sort. */
+    function visible() {
+      const set = $('#fset').value;
+      const finish = $('#ffinish').value;
+      const q = $('#fq').value.trim().toLowerCase();
+      return all
+        .filter((c) => !set || (c.set_code || c.set_name || '') === set)
+        .filter((c) => !finish || (finish === 'foil' ? !!c.foil : !c.foil))
+        .filter((c) => !q || String(c.name || '').toLowerCase().includes(q))
+        .sort(comparator($('#fsort').value));
+    }
+
+    function comparator(mode) {
+      const byName = (a, b) =>
+        String(a.name).localeCompare(String(b.name)) ||
+        String(a.collector_number || '').localeCompare(String(b.collector_number || ''), undefined, { numeric: true });
+      // Unpriced cards always sink to the bottom, in either direction.
+      const byPrice = (dir) => (a, b) => {
+        const x = usd(a.price_usd), y = usd(b.price_usd);
+        if (x == null && y == null) return byName(a, b);
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return (dir === 'asc' ? x - y : y - x) || byName(a, b);
+      };
+      switch (mode) {
+        case 'price-asc': return byPrice('asc');
+        case 'price-desc': return byPrice('desc');
+        case 'added': return (a, b) => String(b.added_at).localeCompare(String(a.added_at)) || byName(a, b);
+        default: return byName;
+      }
+    }
+
+    function render() {
+      const list = visible();
+      const grid = $('#grid');
+      grid.innerHTML = '';
+      for (const c of list) grid.appendChild(tileEl(c));
+      $('#empty').hidden = list.length > 0;
+
+      const copies = (c) => Math.max(1, Number(c.quantity ?? 1) || 1);
+      const totalCopies = (rows) => rows.reduce((s, c) => s + copies(c), 0);
+      const valueOf = (rows) => rows.reduce((s, c) => {
+        const v = usd(c.price_usd);
+        return v == null ? s : s + v * copies(c);
+      }, 0);
+      const priced = list.some((c) => usd(c.price_usd) != null);
+      const value = priced ? ` · USD ${valueOf(list).toFixed(2)}` : '';
+      $('#stat').textContent = `${totalCopies(list)} of ${totalCopies(all)} cards${value}`;
+    }
+
+    function tileEl(c) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'card';
+      const qty = Math.max(1, Number(c.quantity ?? 1) || 1);
+      b.title = `${c.name} — ${c.set_name || ''} #${c.collector_number || ''}${qty > 1 ? ` (×${qty})` : ''}${c.foil ? ' ✨ foil' : ''} (click to zoom)`;
+      b.innerHTML =
+        (c.image_url ? `<img loading="lazy" src="${escapeHtml(c.image_url)}" alt="" />` : '<span class="noimg"></span>') +
+        (qty > 1 ? `<span class="qty">×${qty}</span>` : '') +
+        (c.foil ? '<span class="foil-tag">✨</span>' : '') +
+        `<span class="name">${escapeHtml(c.name)}</span>` +
+        `<span class="sub">${escapeHtml((c.set_code || c.set_name || '').toUpperCase())} #${escapeHtml(c.collector_number || '')}</span>` +
+        `<span class="price">${escapeHtml(money(usd(c.price_usd)))}</span>`;
+      b.addEventListener('click', () => openLightbox(c));
+      return b;
+    }
+
+    // ---- Zoom (lightbox) ----------------------------------------------------
+
+    /**
+     * Tiny sparkline for a price series. Empty when there is only one point —
+     * a single point is not a trend.
+     */
+    function sparkline(points) {
+      const vals = points.map((p) => Number(p.price_usd)).filter((v) => Number.isFinite(v));
+      if (vals.length < 2) return '';
+      const w = 260, h = 44;
+      const min = Math.min(...vals);
+      const span = Math.max(...vals) - min || 1;
+      const step = w / (vals.length - 1);
+      const line = vals
+        .map((v, i) => `${(i * step).toFixed(1)},${(h - 5 - ((v - min) / span) * (h - 12)).toFixed(1)}`)
+        .join(' ');
+      return (
+        `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="price history">` +
+        `<polyline points="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />` +
+        `</svg>`
+      );
+    }
+
+    /** Fill the lightbox's history pane once the series arrives. */
+    async function fillHistory(c) {
+      const pane = document.querySelector('#lightbox .hist');
+      if (!pane) return;
+      let series = [];
+      try {
+        const res = await fetch('/api/prices/' + encodeURIComponent(c.scryfall_id));
+        if (res.ok) series = await res.json();
+      } catch { /* the pane simply stays quiet */ }
+      // The endpoint returns both finishes; chart the row's own finish (foil
+      // rows fall back to the non-foil series on days before foil tracking).
+      if (c.foil) series = series.map((p) => ({ day: p.day, price_usd: p.price_usd_foil ?? p.price_usd }));
+      const vals = series.map((p) => Number(p.price_usd)).filter((v) => Number.isFinite(v));
+      if (vals.length < 2) {
+        const bought = usd(c.price_at_add);
+        pane.innerHTML = bought == null
+          ? `<p class="like-label">Tracking daily — the trend appears with the second snapshot.</p>`
+          : `<p class="like-label">Added at <strong>USD ${bought.toFixed(2)}</strong> · the trend appears with the second snapshot.</p>`;
+        return;
+      }
+      const first = vals[0], last = vals[vals.length - 1];
+      const d = last - first;
+      pane.innerHTML =
+        sparkline(series) +
+        `<p class="like-label"><strong>USD ${last.toFixed(2)}</strong> ` +
+        `${d >= 0 ? '▲' : '▼'} <span class="delta${d < 0 ? ' down' : ''}">${d >= 0 ? '+' : ''}USD ${d.toFixed(2)} since ${escapeHtml(series[0].day)}</span></p>`;
+    }
+
+    function openLightbox(c) {
+      const lb = $('#lightbox');
+      const scry = c.set_code && c.collector_number
+        ? `https://scryfall.com/card/${encodeURIComponent(c.set_code)}/${encodeURIComponent(c.collector_number)}`
+        : null;
+      const qty = Math.max(1, Number(c.quantity ?? 1) || 1);
+      const qtyLabel = qty === 1 ? '1 copy' : `${qty} copies`;
+      // Foil copies of this printing live in their own row; the control below
+      // adjusts that row directly (+1 creates it) instead of flipping finishes.
+      const foilRow = all.find((x) => x.scryfall_id === c.scryfall_id && !!x.foil) || null;
+      const foilCount = Math.max(0, Number(foilRow?.quantity ?? 0) || 0);
+      const foilCtlRow =
+        `<p class="foil-ctl">✨ Foil copies ` +
+        `<span class="qtystep foilstep">` +
+        `<button class="foildec" aria-label="Remove a foil copy"${foilCount ? '' : ' disabled'}>◀</button>` +
+        `<strong class="foilqty">${foilCount}</strong>` +
+        `<button class="foiladd" aria-label="Add a foil copy">▶</button>` +
+        `</span></p>`;
+      lb.innerHTML =
+        `<div class="panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(c.name)}">` +
+          `<button class="close" aria-label="Close">✕</button>` +
+          (c.image_url ? `<img class="big" src="${escapeHtml(c.image_url)}" alt="${escapeHtml(c.name)}" />` : '') +
+          `<div class="meta">` +
+            `<h2>${escapeHtml(c.name)}</h2>` +
+            `<p class="like-label">${escapeHtml(c.set_name || '')}` +
+              `${c.collector_number ? ` #${escapeHtml(c.collector_number)}` : ''} · ${escapeHtml(money(usd(c.price_usd)))} · <strong>${escapeHtml(qtyLabel)}</strong></p>` +
+            (c.foil ? '<p><span class="badge foil">✨ foil</span></p>' : '') +
+            (scry ? `<p><a href="${scry}" target="_blank" rel="noopener">View on Scryfall →</a></p>` : '') +
+            `<div class="hist"><p class="like-label">Loading price history…</p></div>` +
+            `<p class="copies-ctl"><span class="qtystep">` +
+            `<button class="dec" aria-label="Remove a copy">◀</button>` +
+            `<input class="qty" type="number" inputmode="numeric" min="0" value="${qty}" ` +
+            `aria-label="Copies in collection" />` +
+            `<button class="addmore" aria-label="Add a copy">▶</button>` +
+            `</span></p>` +
+            foilCtlRow +
+          `</div>` +
+        `</div>`;
+      lb.hidden = false;
+      document.body.style.overflow = 'hidden';
+      lb.querySelector('.panel').addEventListener('click', (e) => e.stopPropagation());
+      lb.querySelector('.close').addEventListener('click', closeLightbox);
+      lb.querySelector('.dec').addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/collection/' + c.id + '/decrement', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ n: 1 }),
+          });
+          if (!res.ok) throw new Error('the server returned ' + res.status);
+          const { entry } = await res.json();
+          if (!entry) { closeLightbox(); await load(); return; }
+          Object.assign(c, entry);
+          all.splice(all.findIndex((x) => x.id === c.id), 1, entry);
+          closeLightbox(); openLightbox(entry); render();
+        } catch (e) {
+          alert('Update failed: ' + e.message);
+        }
+      });
+      lb.querySelector('.addmore').addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/collection/' + c.id, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ copies: 1 }),
+          });
+          if (!res.ok) throw new Error('the server returned ' + res.status);
+          const { entry } = await res.json();
+          Object.assign(c, entry);
+          all.splice(all.findIndex((x) => x.id === c.id), 1, entry);
+          closeLightbox(); openLightbox(entry); render();
+        } catch (e) {
+          alert('Update failed: ' + e.message);
+        }
+      });
+      // The middle of the stepper is editable (like the upload page's): type an
+      // exact total and it is PUT. Typing 0 (or ◀ on the last copy) removes the
+      // row — there is no separate remove button.
+      const qtyInput = lb.querySelector('.copies-ctl .qty');
+      const commitTypedQty = () => {
+        const raw = String(qtyInput.value).trim();
+        if (raw === '' || !Number.isFinite(Math.floor(Number(raw))) || Number(raw) < 0) { qtyInput.value = String(qty); return; }
+        const target = Math.floor(Number(raw));
+        if (target === qty) { qtyInput.value = String(qty); return; }
+        setExactQty(target);
+      };
+      qtyInput.addEventListener('change', commitTypedQty);
+      qtyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitTypedQty(); } });
+      // If nothing committed (e.g. Esc), put the real count back.
+      qtyInput.addEventListener('blur', () => { if (qtyInput.value !== String(qty)) qtyInput.value = String(qty); });
+
+      /** Set the exact typed total via PUT; the answer is the updated row. */
+      async function setExactQty(target) {
+        try {
+          const res = await fetch('/api/collection/' + c.id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quantity: target }),
+          });
+          if (!res.ok) throw new Error('the server returned ' + res.status);
+          const { entry, removed } = await res.json();
+          if (removed || !entry) { closeLightbox(); await load(); return; }
+          Object.assign(c, entry);
+          all.splice(all.findIndex((x) => x.id === c.id), 1, entry);
+          closeLightbox(); openLightbox(entry); render();
+        } catch (e) {
+          alert('Update failed: ' + e.message);
+          qtyInput.value = String(qty); // restore the real count
+        }
+      }
+      // Foil copies are their own row, so ± is a plain add/decrement against
+      // that sibling (the add creates it on first use; the server deletes the
+      // row when its last copy goes). Afterwards re-open on the row this
+      // lightbox showed — unless the ± *was* that row and it hit zero.
+      const reloadKeepingContext = async () => {
+        closeLightbox();
+        await load();
+        const again = all.find((x) => x.scryfall_id === c.scryfall_id && !!x.foil === !!c.foil);
+        if (again) openLightbox(again);
+      };
+      lb.querySelector('.foiladd').addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/collection', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scryfall_id: c.scryfall_id,
+              name: c.name,
+              set_name: c.set_name,
+              set_code: c.set_code,
+              collector_number: c.collector_number,
+              rarity: c.rarity,
+              image_url: c.image_url,
+              // Store the foil price when Scryfall has one — not this row's price.
+              price_usd: c.current_price_foil_usd ?? c.price_usd,
+              foil: true,
+            }),
+          });
+          if (!res.ok) throw new Error('the server returned ' + res.status);
+          await reloadKeepingContext();
+        } catch (e) {
+          alert('Update failed: ' + e.message);
+        }
+      });
+      lb.querySelector('.foildec').addEventListener('click', async () => {
+        if (!foilRow) return; // disabled anyway when there are no foil copies
+        try {
+          const res = await fetch('/api/collection/' + foilRow.id + '/decrement', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ n: 1 }),
+          });
+          if (!res.ok) throw new Error('the server returned ' + res.status);
+          await reloadKeepingContext();
+        } catch (e) {
+          alert('Update failed: ' + e.message);
+        }
+      });
+      fillHistory(c);
+    }
+
+    function closeLightbox() {
+      const lb = $('#lightbox');
+      lb.hidden = true;
+      lb.innerHTML = '';
+      document.body.style.overflow = '';
+    }
+
+    // ---- wiring -------------------------------------------------------------
+    $('#fset').addEventListener('change', render);
+    $('#fsort').addEventListener('change', render);
+    $('#ffinish').addEventListener('change', render);
+    $('#fq').addEventListener('input', render);
+    $('#lightbox').addEventListener('click', closeLightbox); // click the backdrop
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+
+    load().catch((e) => { $('#stat').textContent = 'Could not load the collection: ' + e.message; });
+  </script>
+</body>
+</html>

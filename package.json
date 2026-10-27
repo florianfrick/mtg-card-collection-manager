@@ -1,0 +1,21 @@
+{
+  "name": "mtg-collection-manager",
+  "version": "0.1.0",
+  "description": "Local MTG card-collection tracker: OCR a scan -> identify the exact Scryfall printing -> add to collection with price.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "detect": "node --disable-warning=ExperimentalWarning scripts/detect.mjs",
+    "mass": "node --disable-warning=ExperimentalWarning scripts/mass_upload.mjs",
+    "smoke": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs",
+    "snapshot": "node --disable-warning=ExperimentalWarning scripts/snapshot_prices.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "jimp": "^1.6.0"
+  }
+}

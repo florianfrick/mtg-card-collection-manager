@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#fbf7f2" />
+  <meta name="description" content="Sign in or create an MTG Collection Manager account — a collection you started anonymously comes with you." />
+  <title>MTG Collection Manager sign in</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-main">
+      <h1 class="brand">MTG Collection Manager <span class="sub">sign in</span></h1>
+      <p class="lede">Sign in with existing account, or sign up to save your guest collection.</p>
+      <p class="aside"><a class="cta" href="/">← Home</a></p>
+    </div>
+  </header>
+
+  <main class="auth">
+    <section id="signin">
+      <h2>Sign in</h2>
+      <label>Username
+        <input id="in-name" type="text" autocomplete="username" maxlength="32" />
+      </label>
+      <label>Password
+        <input id="in-pass" type="password" autocomplete="current-password" />
+      </label>
+      <p id="in-err" class="like-label warn" role="alert" hidden></p>
+      <p><button id="in-go" class="act">Sign in</button></p>
+    </section>
+
+    <section id="signup">
+      <h2>Create an account</h2>
+      <p id="guest-note" class="like-label" hidden></p>
+      <label>Pick a username
+        <input id="up-name" type="text" autocomplete="username" maxlength="32"
+               placeholder="3–32 letters, digits, . - _" />
+      </label>
+      <label>Pick a password
+        <input id="up-pass" type="password" autocomplete="new-password" />
+      </label>
+      <p id="up-err" class="like-label warn" role="alert" hidden></p>
+      <p><button id="up-go" class="act">Create account</button></p>
+    </section>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    /** Where to go after signing in: back where the "sign in" link was clicked. */
+    const next = (() => {
+      try {
+        const url = new URL(location.href);
+        const back = url.searchParams.get('next');
+        return back && back.startsWith('/') && !back.startsWith('//') ? back : '/';
+      } catch { return '/'; }
+    })();
+
+    async function post(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.status);
+      return data;
+    }
+
+    const ok = (data) => {
+      // Signing in can fold a guest collection in; the server says how much came
+      // across, and the landing page says `?merged=N` out loud (then strips it).
+      const merged = Number(data?.merged?.rows || 0);
+      const url = new URL(next, location.origin);
+      if (merged > 0) url.searchParams.set('merged', String(merged));
+      location.replace(url.pathname + url.search + url.hash);
+    };
+    const fail = (el, err) => {
+      el.textContent = 'Could not sign in: ' + err.message;
+      el.hidden = false;
+    };
+
+    $('#in-go').addEventListener('click', async () => {
+      const err = $('#in-err');
+      err.hidden = true;
+      try {
+        ok(await post('/api/auth/login', { username: $('#in-name').value, password: $('#in-pass').value }));
+      } catch (e) { fail(err, e); }
+    });
+    for (const [sel, btn] of [['#in-name', '#in-go'], ['#in-pass', '#in-go'], ['#up-name', '#up-go'], ['#up-pass', '#up-go']]) {
+      $(sel).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $(btn).click(); } });
+    }
+
+    $('#up-go').addEventListener('click', async () => {
+      const err = $('#up-err');
+      err.hidden = true;
+      const again = $('#up-pass').value;
+      if ($('#up-name').value.trim() !== $('#up-name').value) {
+        err.textContent = 'Usernames cannot start or end with a space — it was trimmed for you.';
+        err.hidden = false;
+        $('#up-name').value = $('#up-name').value.trim();
+        return;
+      }
+      try {
+        ok(await post('/api/auth/register', { username: $('#up-name').value, password: again }));
+      } catch (e) { fail(err, e); }
+    });
+
+    // Visiting from a browser that already collected cards anonymously? Say so —
+    // register upgrades that collection, nothing is thrown away.
+    (async () => {
+      let me = null;
+      try {
+        const res = await fetch('/api/auth/guest', { method: 'POST' });
+        if (res.ok) me = (await res.json()).user ?? null;
+      } catch { /* offline or cookies off: both forms still work */ }
+      if (me?.isGuest) {
+        const note = $('#guest-note');
+        note.textContent = `Browsing as ${me.name} — create the account here and those cards stay yours.`;
+        note.hidden = false;
+      } else if (me) {
+        location.replace(next); // already signed in: nothing to do here
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+node_modules/
+data/
+*.log
+.DS_Store
+# Local assistant scratch (work logs, memory) — not part of the app.
+.workbuddy-ai/
+# Generated outputs: debug.mjs crop JPEGs (regenerate with scripts/debug.mjs)
+# and Python bytecode.
+debug-out/
+__pycache__/
+# The PP-OCR engine's Python environment (scripts/ppocr_sidecar.py): ~340MB of
+# runtime + models, rebuilt from tools/ppocr/setup.md rather than committed.
+tools/ppocr/venv/
