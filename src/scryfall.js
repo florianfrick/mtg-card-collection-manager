@@ -78,6 +78,8 @@ async function sf(path, init) {
 // the same card frame after frame, and the same printing comes back repeatedly
 // during a session, so each distinct lookup should cost exactly one request —
 // including the negative results (a misread set/number is never re-checked).
+// Both caches are bounded: a long-running server would otherwise keep every
+// misread query it ever saw alive for the life of the process.
 const CARD_CACHE_MAX = 500;
 const cardCache = new Map();
 
@@ -120,7 +122,8 @@ export async function searchCards(query, unique = 'cards') {
   return r.data;
 }
 
-const printingsCache = new Map(); // name -> printing list (per process)
+const PRINTINGS_CACHE_MAX = 200; // names -> printing list; a card with 40 printings is ~40 entries' worth
+const printingsCache = new Map();
 
 /** Returns an array of every printing of `name`, mapped via toPrinting(). */
 export async function printingsOf(name) {
@@ -132,26 +135,82 @@ export async function printingsOf(name) {
   const r = await sf(q);
   if (r.not_found || !Array.isArray(r.data)) return [];
   const out = r.data.map(toPrinting).filter(Boolean);
+  if (printingsCache.size >= PRINTINGS_CACHE_MAX) printingsCache.delete(printingsCache.keys().next().value);
   printingsCache.set(name, out);
   return out;
 }
 
-let setCodes = null;
-let setsLoaded = false;
+// ---- Sets ------------------------------------------------------------------
+//
+// One `/sets` request feeds two callers: the set-code validation the matcher
+// runs on every scan, and set completion (which needs each set's printed size).
+// It is fetched once per process — but a failure must NOT be permanent. The
+// first scan of a session can easily land while the machine is offline, and a
+// sticky "no sets" would silently switch set-code validation off (quietly
+// worsening every later match) until someone restarted the server.
+
+const SETS_RETRY_MS = numOrNull(process.env.MTG_SETS_RETRY_MS) ?? 5 * 60_000; // after a failed attempt, wait this long before retrying
+
+let catalog = null; // Map<CODE, { code, name, cardCount, releasedAt, setType, icon }>
+let codes = null; // Set<CODE> — the cheap lookup the matcher wants
+let attemptAt = 0;
+let inFlight = null;
+
+async function fetchSets() {
+  const r = await sf('/sets');
+  if (!Array.isArray(r.data)) return null;
+  const map = new Map();
+  for (const s of r.data) {
+    const code = String(s.code ?? '').toUpperCase();
+    if (!code) continue;
+    map.set(code, {
+      code,
+      name: s.name ?? code,
+      // `printed_size` is the number printed on the cards ("/280"); `card_count`
+      // counts every variant and treatment too. Completion wants the former.
+      printedSize: Number.isFinite(Number(s.printed_size)) ? Number(s.printed_size) : null,
+      cardCount: Number.isFinite(Number(s.card_count)) ? Number(s.card_count) : null,
+      releasedAt: s.released_at ?? null,
+      setType: s.set_type ?? null,
+      icon: s.icon_svg_uri ?? null,
+    });
+  }
+  return map;
+}
+
+/**
+ * Every Scryfall set, keyed by uppercase set code, or null while unavailable.
+ * Concurrent callers share one request; a failure is retried after
+ * SETS_RETRY_MS rather than cached forever.
+ */
+export async function allSets() {
+  if (catalog) return catalog;
+  if (inFlight) return inFlight;
+  if (Date.now() - attemptAt < SETS_RETRY_MS) return null; // failed recently — do not hammer
+  attemptAt = Date.now();
+  inFlight = (async () => {
+    try {
+      const map = await fetchSets();
+      if (map) {
+        catalog = map;
+        codes = new Set(map.keys());
+      }
+      return catalog;
+    } finally {
+      inFlight = null;
+    }
+  })();
+  return inFlight;
+}
 
 /**
  * All Scryfall set codes (uppercase), fetched once per process; null on failure.
  * Used to validate set codes OCR'd from the card's "SET • EN" line.
  */
 export async function knownSets() {
-  if (!setsLoaded) {
-    setsLoaded = true;
-    const r = await sf('/sets');
-    if (Array.isArray(r.data)) {
-      setCodes = new Set(r.data.map((s) => String(s.code).toUpperCase()));
-    }
-  }
-  return setCodes;
+  if (codes) return codes;
+  await allSets();
+  return codes;
 }
 
 /** Normalize a raw Scryfall card object into our compact "printing" shape. */
@@ -177,11 +236,11 @@ export function toPrinting(card) {
 
 /**
  * Current USD prices for a batch of Scryfall printing ids — one entry per id:
- * `{ usd, usd_foil }`, each null when Scryfall has no price for that finish.
- * Uses POST /cards/collection (up to 75 identifiers per request), so a whole
- * collection costs a handful of requests instead of one per card — this is what
- * keeps the daily price snapshot cheap. Missing ids simply do not appear in the
- * returned Map.
+ * `{ usd, usd_foil, rarity }`, each price null when Scryfall has no price for
+ * that finish. Uses POST /cards/collection (up to 75 identifiers per request),
+ * so a whole collection costs a handful of requests instead of one per card —
+ * this is what keeps the daily price snapshot cheap. Missing ids simply do not
+ * appear in the returned Map.
  */
 export async function pricesForIds(ids) {
   const out = new Map();
@@ -195,7 +254,11 @@ export async function pricesForIds(ids) {
     });
     if (r && Array.isArray(r.data)) {
       for (const c of r.data) {
-        out.set(c.id, { usd: numOrNull(c.prices?.usd), usd_foil: numOrNull(c.prices?.usd_foil) });
+        out.set(c.id, {
+          usd: numOrNull(c.prices?.usd),
+          usd_foil: numOrNull(c.prices?.usd_foil),
+          rarity: c.rarity ?? null,
+        });
       }
     }
   }

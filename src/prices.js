@@ -23,6 +23,8 @@ export async function snapshotPrices() {
     scryfall_id: id,
     price_usd: prices.get(id)?.usd ?? null,
     price_usd_foil: prices.get(id)?.usd_foil ?? null,
+    // Same response, no extra request: fills in a rarity an older add missed.
+    rarity: prices.get(id)?.rarity ?? null,
   }));
   const written = recordPrices(rows);
   return {

@@ -15,6 +15,7 @@ import {
 } from './auth.js';
 import { numOrNull } from './util.js';
 import { startDailySnapshots } from './prices.js';
+import { setCompletion } from './sets.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -184,7 +185,9 @@ const AUTO_ADD_MIN_LIKELIHOOD = numOrNull(process.env.MTG_AUTO_ADD_MIN) ?? 0.5;
 
 /** Map a detected candidate / manual POST body onto a collection row.
  * `foil` (manual flag — there is no foil detection yet) picks the foil price:
- * a foil copy is worth its own number, so it stores usd_foil, not usd. */
+ * a foil copy is worth its own number, so it stores usd_foil, not usd.
+ * `rarity` travels with every candidate; dropping it here is what used to leave
+ * the column empty for every card in the database. */
 function entryFromBody(b = {}) {
   const foil = b.foil === true || b.foil === 1;
   return {
@@ -193,6 +196,7 @@ function entryFromBody(b = {}) {
     set_name: b.set_name,
     set_code: b.set_code,
     collector_number: b.collector_number,
+    rarity: b.rarity ?? null,
     image_url: b.image_url,
     foil,
     price_usd: foil
@@ -416,6 +420,19 @@ app.get('/api/prices/portfolio', (req, res) => {
 app.get('/api/prices/:scryfall_id', (req, res) => {
   try {
     res.json(priceHistory(req.params.scryfall_id));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ---- Set completion (see src/sets.js) --------------------------------------
+
+// How much of each set the caller owns. The numerator is the collection, the
+// denominator is Scryfall's printed set size — so the answer is "143 of 280",
+// the same number printed on the cards.
+app.get('/api/sets', async (req, res) => {
+  try {
+    res.json(await setCompletion(req.userId));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }

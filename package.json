@@ -12,7 +12,10 @@
     "detect": "node --disable-warning=ExperimentalWarning scripts/detect.mjs",
     "mass": "node --disable-warning=ExperimentalWarning scripts/mass_upload.mjs",
     "smoke": "node --disable-warning=ExperimentalWarning scripts/smoke.mjs",
-    "snapshot": "node --disable-warning=ExperimentalWarning scripts/snapshot_prices.mjs"
+    "snapshot": "node --disable-warning=ExperimentalWarning scripts/snapshot_prices.mjs",
+    "gc": "node --disable-warning=ExperimentalWarning scripts/gc.mjs",
+    "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test"
   },
   "dependencies": {
     "express": "^4.19.2",

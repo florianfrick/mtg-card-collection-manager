@@ -12,7 +12,7 @@
   <header class="hero">
     <div class="hero-main">
       <h1 class="brand">MTG Collection Manager</h1>
-      <p class="lede">Add cards to your collection via image upload, live camera feed, or manual search.</p>
+      <p class="lede">Add cards to your collection with the live camera, an image upload, or a name search.</p>
     </div>
     <p class="hero-account"><span id="who"></span></p>
   </header>
@@ -20,8 +20,38 @@
   <main class="layout">
   <section id="scan">
     <h2>Add cards to collection</h2>
-    <h3>By live camera feed</h3>
-    <p class="aside"><a class="cta" href="/camera.html">📷 Camera Mode →</a>
+
+    <h3>By camera</h3>
+    <p class="aside">Hold one card at a time in front of the camera — each card is read, matched and added as you go.</p>
+    <div id="cammode">
+      <p>
+        <button id="cam-enable">🎥 Enable camera</button>
+        <button id="cam-start" disabled>▶ Start scanning</button>
+        <button id="cam-stop" disabled>⏸ Pause</button>
+      </p>
+      <p>
+        <label class="muted">Pace
+          <select id="cam-pace">
+            <option value="1000">1s refresh</option>
+            <option value="1500" selected>1.5s refresh</option>
+            <option value="3000">3s refresh</option>
+          </select>
+        </label>
+        <label class="foil-toggle"><input type="checkbox" id="camfoil" /> ✨ Foil cards</label>
+      </p>
+      <div id="cams">
+        <video id="video" playsinline muted hidden></video>
+        <span id="cropwrap"><img id="crop" alt="" hidden /><canvas id="cues" hidden></canvas></span>
+      </div>
+      <p id="cam-status">Enable the camera, then press Start. Nothing is captured before that.</p>
+      <p id="cam-read" class="like-label"></p>
+      <p id="cam-quality" class="like-label"></p>
+      <div id="cam-current"></div>
+      <details id="cam-session" hidden>
+        <summary>This session (<span id="cam-count">0</span> cards)</summary>
+        <div id="cam-log"></div>
+      </details>
+    </div>
 
     <h3>By name</h3>
     <input id="q" placeholder="e.g. Lightning Bolt" size="30" />
@@ -29,8 +59,6 @@
     <button id="clear" disabled>Clear</button>
     <p><label class="foil-toggle"><input type="checkbox" id="searchfoil" /> ✨ Add as foil</label></p>
     <div id="searchres"></div>
-
-
 
     <h3>By image</h3>
     <input type="file" id="file" accept="image/*" />
@@ -50,8 +78,6 @@
       <h3>Detected candidates</h3>
       <div id="candidates"></div>
     </div>
-
-
   </section>
 
   <section id="col">
@@ -61,8 +87,10 @@
   </section>
   </main>
 
-  <script>
-    const $ = (s) => document.querySelector(s);
+  <script type="module">
+    import { $, api, escapeHtml, currentUser, renderAccount, bootIdentity } from '/shared.js';
+    import { createCamera } from '/camera.js';
+
     let currentImage = null;
     let lastDetect = null;
     let lastAuto = null;  // the server's report on what the last scan auto-added
@@ -74,57 +102,6 @@
       'Detect a card and the most likely printing is added to your collection automatically. '
       + 'If the guess is wrong, pick another printing from the candidate list below, or manage '
       + 'copies in the collection gallery.';
-
-    async function api(path, opts = {}) {
-      const res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json' },
-        ...opts,
-      });
-      if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); throw new Error('signed out'); }
-      if (!res.ok) {
-        let msg = res.status;
-        try { msg = (await res.json()).error || msg; } catch {}
-        throw new Error(msg);
-      }
-      return res.json();
-    }
-
-    /** Fill the hero account slot: Sign in (guest) vs. account name + Sign out. */
-    async function boot() {
-      // Identity first: an anonymous visitor is minted a throwaway guest
-      // collection here (Set-Cookie on the 200), so the cards they add below
-      // are already theirs. Afterwards renderWho() fills the top-right account
-      // slot — except on this page the slot refreshes on every collection load
-      // too, because the session can change in another tab while a scan sits open.
-      try { await api('/api/auth/guest', { method: 'POST' }); } catch (e) { if (String(e.message) === 'signed out') return; }
-      const me = await whoever();
-      if (me) renderWho(me);
-    }
-
-    /** Whoever owns this browser's collection right now. */
-    async function whoever() {
-      try {
-        const res = await fetch('/api/auth/me');
-        if (res.status === 401) { location.replace('/login.html?next=' + encodeURIComponent(location.pathname)); return null; }
-        if (res.ok) return (await res.json()).user ?? null;
-      } catch { /* offline: the page still scans, slot stays empty */ }
-      return null;
-    }
-
-    /** Fill the top-right account slot for whoever `me` is (Sign in vs. name + Sign out). */
-    function renderWho(me) {
-      const box = $('#who');
-      if (!box) return;
-      box.innerHTML = me.isGuest
-        ? `<a class="who-btn" href="/login.html?next=${encodeURIComponent(location.pathname)}">Sign in</a>`
-        : `<span class="who-account"><span class="who-name">${escapeHtml(me.username || me.name)}</span><a href="#" id="logout">Sign out</a></span>`;
-      const out = $('#logout');
-      if (out) out.addEventListener('click', async (e) => {
-        e.preventDefault();
-        try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* still gone from here */ }
-        location.replace('/login.html?next=' + encodeURIComponent(location.pathname));
-      });
-    }
 
     function fileToDataUrl(file) {
       return new Promise((res, rej) => {
@@ -327,7 +304,7 @@
       const c = a.candidate;
       const d = document.createElement('div');
       d.className = 'candidate top';
-      const img = c.image_url ? `<img class="thumb" src="${c.image_url}" alt="" />` : '';
+      const img = c.image_url ? `<img class="thumb" src="${escapeHtml(c.image_url)}" alt="" />` : '';
       const qty = a.entry?.quantity ?? 1;
       // Copies held *before* this scan: the stepper may undo this scan's copy
       // but never touch what was already in the collection (and there is no
@@ -345,7 +322,7 @@
         img +
         `<div><strong>${escapeHtml(c.name)}</strong><br/>` +
         `${escapeHtml(c.set_name)} #${escapeHtml(c.collector_number)}<br/>` +
-        `USD ${price ?? '—'}${c.prices?.eur ? ` · EUR ${c.prices.eur}` : ''}</div>` +
+        `USD ${escapeHtml(price ?? '—')}${c.prices?.eur ? ` · EUR ${escapeHtml(c.prices.eur)}` : ''}</div>` +
         `<p><span class="badge${foil ? ' foil' : ''}">${escapeHtml(status)}</span>` +
         `<span class="like-label"> ${escapeHtml(bits.join(' · '))}</span></p>` +
         // One segmented control: ◀ | count | ▶. The middle is a real input so
@@ -509,34 +486,29 @@
     function candidateEl(c, { bestGuess = false, badge = null, action = null } = {}) {
       const d = document.createElement('div');
       d.className = 'candidate' + (bestGuess ? ' top' : '');
-      const img = c.image_url ? `<img class="thumb" src="${c.image_url}" alt="" />` : '';
+      const img = c.image_url ? `<img class="thumb" src="${escapeHtml(c.image_url)}" alt="" />` : '';
       const pct = c.likelihood == null ? null : Math.round(c.likelihood * 100);
       const like = pct == null ? '' :
         `<div class="like" title="Relative likelihood from the OCR cues (set/number agreement + name legibility) — not a calibrated probability.">` +
         `<i style="width:${pct}%"></i></div>` +
-        `<div class="like-label">${pct}% likely$</div>`;
+        `<div class="like-label">${pct}% likely</div>`;
       // Foil prices ride along so the "Add as foil" toggle below is priced honestly.
-      const foilPrice = c.prices?.usd_foil != null ? ` · foil USD ${c.prices.usd_foil}` : '';
+      const foilPrice = c.prices?.usd_foil != null ? ` · foil USD ${escapeHtml(c.prices.usd_foil)}` : '';
       d.innerHTML =
         img +
         `<div><strong>${escapeHtml(c.name)}</strong><br/>` +
         `${escapeHtml(c.set_name)} #${escapeHtml(c.collector_number)}<br/>` +
-        `USD ${c.prices?.usd ?? '—'}${foilPrice}${c.prices?.eur ? ` · EUR ${c.prices.eur}` : ''}${like}</div>` +
+        `USD ${escapeHtml(c.prices?.usd ?? '—')}${foilPrice}${c.prices?.eur ? ` · EUR ${escapeHtml(c.prices.eur)}` : ''}${like}</div>` +
         (badge ? `<p><span class="badge">${escapeHtml(badge)}</span></p>` : '') +
         (action ? `<p><button class="add">${escapeHtml(action.label)}</button></p>` : '');
       if (action) d.querySelector('.add').addEventListener('click', () => action.onClick(c));
       return d;
     }
 
-    function escapeHtml(s) {
-      return String(s ?? '').replace(/[&<>"']/g, (c) =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
-
     async function loadCollection() {
       const list = await api('/api/collection');
-      const me = await whoever().catch(() => null);
-      if (me) renderWho(me);
+      const me = await currentUser();
+      if (me) renderAccount(me);
       const copies = (c) => Math.max(1, Number(c.quantity ?? 1) || 1);
       const totalCopies = list.reduce((s, c) => s + copies(c), 0);
       $('#count').textContent = totalCopies;
@@ -556,17 +528,18 @@
       const d = document.createElement('div');
       const fromScan = !!autoEntry && top.id === autoEntry.id;
       d.className = 'candidate' + (fromScan ? ' top' : '');
-      const img = top.image_url ? `<img class="thumb" src="${top.image_url}" alt="" />` : '';
+      const img = top.image_url ? `<img class="thumb" src="${escapeHtml(top.image_url)}" alt="" />` : '';
       const held = copies(top);
       d.innerHTML =
         img +
         `<div><strong>${escapeHtml(top.name)}</strong><br/>` +
         `${escapeHtml(top.set_name)} #${escapeHtml(top.collector_number)}<br/>` +
-        `USD ${top.price_usd ?? '—'} · ${held === 1 ? '1 in collection' : `${held} in collection`}</div>` +
+        `USD ${escapeHtml(top.price_usd ?? '—')} · ${held === 1 ? '1 in collection' : `${held} in collection`}</div>` +
         (top.foil ? '<p><span class="badge foil">✨ foil</span></p>' : '') +
         (fromScan ? '<p><span class="badge">✓ from the last scan</span></p>' : '');
       box.appendChild(d);
     }
+
     // ---- OCR overlay: draw the recognized word boxes onto the cropped card ----
     function clearOverlay() {
       const cv = $('#ocrlayer');
@@ -652,9 +625,13 @@
     $('#imgwrap').addEventListener('mouseleave', () => { $('#tip').hidden = true; });
     window.addEventListener('resize', () => { if (lastDetect) drawOverlay(lastDetect); });
 
+    // Camera mode lives on this page now (public/camera.js). Every add it makes
+    // shows up in the collection panel on the right without a reload.
+    createCamera({ onChange: () => loadCollection().catch((e) => console.error(e)) });
+
     renderAuto();
     loadCollection().catch((e) => console.error(e));
-    boot().catch((e) => console.error(e));
+    bootIdentity().catch((e) => console.error(e));
   </script>
 </body>
 </html>

@@ -151,26 +151,31 @@ const meta = {
 
 // ---- Cards -----------------------------------------------------------------
 
+// Every descriptive column is COALESCEd: a caller that only knows a printing's
+// id and price (a re-add, a bulk import, the price job) must not blank out what
+// an earlier, more complete answer stored. `name` is the exception — it is the
+// card's identity and every caller has it.
 const CARD_UPSERT = db.prepare(`
   INSERT INTO card (scryfall_id, name, set_name, set_code, collector_number, rarity, image_url)
   VALUES (?,?,?,?,?,?,?)
   ON CONFLICT(scryfall_id) DO UPDATE SET
     name             = excluded.name,
-    set_name         = excluded.set_name,
-    set_code         = excluded.set_code,
-    collector_number = excluded.collector_number,
-    rarity           = excluded.rarity,
-    image_url        = excluded.image_url
+    set_name         = COALESCE(excluded.set_name, card.set_name),
+    set_code         = COALESCE(excluded.set_code, card.set_code),
+    collector_number = COALESCE(excluded.collector_number, card.collector_number),
+    rarity           = COALESCE(excluded.rarity, card.rarity),
+    image_url        = COALESCE(excluded.image_url, card.image_url)
 `);
 
 /** Insert a printing or refresh its identity fields; returns the card row. */
 function upsertCard(e) {
+  const num = e.collector_number == null || e.collector_number === '' ? null : String(e.collector_number);
   CARD_UPSERT.run(
     e.scryfall_id,
     e.name,
     e.set_name ?? null,
     e.set_code ?? null,
-    String(e.collector_number ?? ''),
+    num,
     e.rarity ?? null,
     e.image_url ?? null
   );
@@ -202,17 +207,23 @@ function recordPriceAt(cardId, priceUsd, day, priceUsdFoil = null) {
 
 /**
  * Record today's prices for many cards at once — the daily snapshot job.
- * `rows` = [{ scryfall_id, price_usd, price_usd_foil }]. Returns how many
- * cards were written.
+ * `rows` = [{ scryfall_id, price_usd, price_usd_foil, rarity? }]. Returns how
+ * many cards were written.
+ *
+ * `rarity` rides along on the same Scryfall response for free, so a card stored
+ * by an older build (or by a caller that did not know its rarity) is filled in
+ * here rather than costing an extra request.
  */
 export function recordPrices(rows) {
   const day = isoDay();
   const findCard = db.prepare('SELECT id FROM card WHERE scryfall_id = ?');
+  const fillRarity = db.prepare('UPDATE card SET rarity = ? WHERE id = ? AND rarity IS NULL');
   let written = 0;
   for (const r of rows) {
-    if (r.price_usd == null && r.price_usd_foil == null) continue; // nothing to record
     const card = findCard.get(r.scryfall_id);
     if (!card) continue;
+    if (r.rarity) fillRarity.run(r.rarity, card.id);
+    if (r.price_usd == null && r.price_usd_foil == null) continue; // nothing to record
     recordPriceAt(card.id, r.price_usd ?? null, day, r.price_usd_foil ?? null);
     written++;
   }
@@ -408,6 +419,34 @@ export function listEntries(userId = DEFAULT_USER_ID) {
     .all(userId);
 }
 
+/**
+ * Per-set totals for one collection: how many *distinct printings* of a set are
+ * owned, how many copies that is, and what they are worth.
+ *
+ * The numerator of set completion lives here because the data already does:
+ * `card.set_code` + `card.collector_number` are what the exact-printing lookup
+ * matches on. Foil and non-foil copies of the same printing count once (they are
+ * two rows of the same card).
+ */
+export function setOwnership(userId = DEFAULT_USER_ID) {
+  return db
+    .prepare(
+      `SELECT LOWER(card.set_code) AS code,
+              COUNT(DISTINCT card.collector_number) AS owned,
+              COALESCE(SUM(collection.quantity), 0) AS copies,
+              COALESCE(SUM(
+                CASE WHEN collection.foil = 1
+                     THEN COALESCE(card.current_price_foil_usd, card.current_price_usd, 0)
+                     ELSE COALESCE(card.current_price_usd, 0) END * collection.quantity
+              ), 0) AS value
+         FROM collection
+         JOIN card ON card.id = collection.card_id
+        WHERE collection.user_id = ? AND card.set_code IS NOT NULL AND card.set_code <> ''
+        GROUP BY LOWER(card.set_code)`
+    )
+    .all(userId);
+}
+
 export function removeEntry(id, userId = DEFAULT_USER_ID) {
   return db.prepare('DELETE FROM collection WHERE id = ? AND user_id = ?').run(Number(id), userId);
 }
@@ -450,10 +489,19 @@ export function decrementEntry(id, userId = DEFAULT_USER_ID, n = 1) {
 /**
  * Set a collection row's exact quantity. `0` (or less) deletes the row.
  * Returns the updated row, or null when the row was removed.
+ *
+ * A missing or unparseable quantity throws instead of deleting: `Number(
+ * undefined)` is NaN, and treating NaN as "zero copies" is how a PUT with an
+ * empty body used to wipe a row. The route turns the throw into a 400.
  */
 export function setEntryQuantity(id, qty, userId = DEFAULT_USER_ID) {
-  const q = Math.floor(Number(qty));
-  if (!Number.isFinite(q) || q <= 0) {
+  // `null`/`undefined`/`''` are all "the client sent nothing", and Number() turns
+  // them into 0 (or NaN) — which must never be read as "zero copies".
+  const blank = qty === null || qty === undefined || (typeof qty === 'string' && qty.trim() === '');
+  const n = blank ? NaN : Number(qty);
+  if (!Number.isFinite(n)) throw new Error('quantity must be a number');
+  const q = Math.floor(n);
+  if (q <= 0) {
     db.prepare('DELETE FROM collection WHERE id = ? AND user_id = ?').run(Number(id), userId);
     return null;
   }
@@ -476,6 +524,19 @@ function tx(fn) {
     db.exec('ROLLBACK');
     throw e;
   }
+}
+
+/** Close the database handle (tests and graceful shutdown). */
+export function closeDatabase() {
+  db.close();
+}
+
+/**
+ * Write a consistent copy of the database to `path` (VACUUM INTO: one statement,
+ * no file locking games, and the copy is defragmented). Refuses to overwrite.
+ */
+export function backupTo(path) {
+  db.exec(`VACUUM INTO '${String(path).replace(/'/g, "''")}'`);
 }
 
 /** A user as the API may expose it — never the password columns. */
@@ -658,32 +719,67 @@ export function purgeGuests({ emptyDays = 7, idleDays = 30 } = {}) {
   return removed;
 }
 
+/** Guest identities with how many collection rows each holds (housekeeping). */
+export function guestInventory() {
+  return db
+    .prepare(
+      `SELECT user.id AS id, user.name AS name, user.created_at AS created_at,
+              (SELECT COUNT(*) FROM collection WHERE collection.user_id = user.id) AS rows,
+              (SELECT COALESCE(SUM(quantity), 0) FROM collection WHERE collection.user_id = user.id) AS copies
+         FROM user WHERE user.is_guest = 1
+        ORDER BY user.id`
+    )
+    .all();
+}
+
+/**
+ * Delete guest identities now, regardless of age: every one of them, or only
+ * those that never collected a card (`includeWithCards: false`). Used by
+ * `npm run gc` after a session of test scans. Accounts are never touched.
+ */
+export function deleteGuests({ includeWithCards = false } = {}) {
+  const guests = guestInventory().filter((g) => includeWithCards || g.rows === 0);
+  let removed = 0;
+  tx(() => {
+    for (const g of guests) {
+      deleteUserRows(g.id);
+      removed++;
+    }
+  });
+  return { removed, kept: guestInventory().length };
+}
+
 // ---- One-time fold of the pre-normalization table --------------------------
 
 // The old single table (collection_entry) is split into card + collection so an
 // existing collection survives. Guarded by a meta flag, so a card the user later
-// removes is never silently re-added by a second pass.
+// removes is never silently re-added by a second pass. Once the rows are folded
+// in, the old table is dropped: keeping it around only invites reading stale
+// data (and it is never written to again).
 function migrateLegacy() {
-  if (meta.get('legacy_split_done')) return;
   const legacy = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'collection_entry'")
     .get();
-  if (legacy) {
-    // The rows need an account to own them. Without one, leave the old table
-    // in place and retry on a later boot — the flag stays unset until it lands.
-    if (DEFAULT_USER_ID == null) return;
-    const addToCollection = db.prepare(
-      `INSERT OR IGNORE INTO collection (user_id, card_id, quantity, added_at, price_at_add)
-       VALUES (?,?,?,?,?)`
-    );
-    for (const r of db.prepare('SELECT * FROM collection_entry ORDER BY id').all()) {
-      const card = upsertCard({ ...r, rarity: null });
-      addToCollection.run(DEFAULT_USER_ID, card.id, 1, r.added_at, r.price_usd);
-      // Seed day-one history from the price captured when the card was added.
-      if (r.price_usd != null) recordPriceAt(card.id, r.price_usd, isoDay(r.added_at));
+  if (!meta.get('legacy_split_done')) {
+    if (legacy) {
+      // The rows need an account to own them. Without one, leave the old table
+      // in place and retry on a later boot — the flag stays unset until it lands.
+      if (DEFAULT_USER_ID == null) return;
+      const addToCollection = db.prepare(
+        `INSERT OR IGNORE INTO collection (user_id, card_id, quantity, added_at, price_at_add)
+         VALUES (?,?,?,?,?)`
+      );
+      for (const r of db.prepare('SELECT * FROM collection_entry ORDER BY id').all()) {
+        const card = upsertCard({ ...r, rarity: null });
+        addToCollection.run(DEFAULT_USER_ID, card.id, 1, r.added_at, r.price_usd);
+        // Seed day-one history from the price captured when the card was added.
+        if (r.price_usd != null) recordPriceAt(card.id, r.price_usd, isoDay(r.added_at));
+      }
     }
+    meta.set('legacy_split_done', 1);
   }
-  meta.set('legacy_split_done', 1);
+  // Safe now: the flag is set, so the rows (if any) are in `collection`.
+  if (legacy) db.exec('DROP TABLE collection_entry');
 }
 
 migrateLegacy();

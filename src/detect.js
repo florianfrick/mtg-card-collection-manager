@@ -223,9 +223,17 @@ function cardConfidence(path, coverage) {
   return Math.max(0, Math.min(1, base));
 }
 
-/** Fraction of a card name's words that are legible in the OCR text (0..1). */
+/**
+ * Fraction of a card name's words that are legible in the OCR text (0..1).
+ *
+ * Only the front face counts: Scryfall names an adventure/split card
+ * "Virtue of Loyalty // Ardenvale Fealty", but the card in the photo prints one
+ * face's title, so measuring against the whole string would cap a perfectly
+ * legible name at 50% and lose the card.
+ */
 function nameCoverage(name, ocrWords) {
-  const big = (name.toLowerCase().match(/[a-z']+/g) || []).filter((w) => w.length >= 3);
+  const front = String(name ?? '').split('//')[0];
+  const big = (front.toLowerCase().match(/[a-z']+/g) || []).filter((w) => w.length >= 3);
   if (!big.length) return 0;
   return big.filter((w) => ocrWords.has(w)).length / big.length;
 }

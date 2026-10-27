@@ -1,13 +1,22 @@
 // Smoke test for the HTTP API. Starts from a running server (npm start).
 //   node scripts/smoke.mjs [scanImage]
 // Exercises: detect (over HTTP), auto-add of the best match, add, list, remove.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.MTG_BASE || 'http://localhost:3000';
-const scan = process.argv[2] || join(here, '..', 'card scans', 'Scan_20260927 (8).png');
+
+/** The image to test with: the one named on the command line, else the first scan. */
+function defaultScan() {
+  const dir = join(here, '..', 'card scans');
+  const files = readdirSync(dir).filter((f) => /\.(png|jpe?g)$/i.test(f)).sort();
+  if (!files.length) throw new Error(`no image in "${dir}" — pass one: node scripts/smoke.mjs <image>`);
+  return join(dir, files[0]);
+}
+
+const scan = process.argv[2] || defaultScan();
 
 // The API is per-identity now: every request carries the session cookie, and a
 // run that never signs in just works as a guest with its own collection.

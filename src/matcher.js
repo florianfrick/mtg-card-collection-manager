@@ -210,7 +210,7 @@ export function parseOcr(words, knownSets) {
     [setCode, 'EN', 'NE', 'R', 'C', '★', 'ℯ'].filter(Boolean).map((s) => String(s).toUpperCase())
   );
   const nameWords = (text) =>
-    text
+    String(text ?? '')
       .split(/[\s/]+/)
       .map((t) => t.replace(/^[^\w]+|[^\w]+$/g, ''))
       .filter((t) => t && /[A-Za-z]/.test(t) && !/^\d+$/.test(t) && !cueTokens.has(t.toUpperCase()));

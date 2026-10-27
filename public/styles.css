@@ -540,17 +540,11 @@ img.thumb {
   box-shadow: var(--shadow);
 }
 
-/* ---- Camera page -------------------------------------------------------- */
-#layout { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px; }
-#layout > #cam { flex: 1 1 480px; min-width: 0; margin: 0; }
-#layout > #right { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
-#layout > #right > section { margin: 0; }
-@media (max-width: 760px) {
-  #layout > #cam, #layout > #right { flex-basis: 100%; }
-}
+/* ---- Camera mode (embedded in index.html, see public/camera.js) ---------- */
+#cammode { margin: 6px 0 18px; }
 #cams { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
 #video {
-  width: 440px;
+  width: 420px;
   max-width: 100%;
   background: #1b1512;
   border: 1px solid var(--line);
@@ -561,17 +555,18 @@ img.thumb {
 #crop {
   display: block;
   width: 100%;
-  max-width: 220px;
+  max-width: 200px;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
 }
 #cues { position: absolute; left: 0; top: 0; pointer-events: none; }
-#status { margin: 14px 0 0; }
-#status.ok { color: var(--green); font-weight: 600; }
-#status.warn { color: var(--amber); font-weight: 600; }
-#read, #quality { margin: 0.4em 0 0; }
+#cam-status { margin: 14px 0 0; }
+#cam-status.ok { color: var(--green); font-weight: 600; }
+#cam-status.warn { color: var(--amber); font-weight: 600; }
+#cam-read, #cam-quality, #quality { margin: 0.4em 0 0; }
+#cam-current:empty { display: none; }
 details { margin: 10px 0 2px; }
 summary { cursor: pointer; font-size: 0.88rem; font-weight: 600; color: var(--accent-strong); }
 summary::marker { color: var(--accent); }
@@ -789,3 +784,70 @@ main.auth p { margin: 0.7em 0 0; }
 #lightbox .hist p { margin: 0.25em 0 0; }
 .delta { font-weight: 700; color: var(--green); }
 .delta.down { color: var(--amber); }
+
+/* ---- Set completion (collection.html) ------------------------------------ */
+/* One row per set: code, name, progress bar, "143 / 280", percent. The whole
+   row is a button — clicking it filters the gallery to that set. */
+.setlist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+.setrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 90px auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease;
+}
+.setrow:hover { border-color: var(--line-strong); box-shadow: var(--shadow); transform: translateY(-1px); color: var(--ink); }
+.setrow:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.setrow .setcode {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-ring);
+  border-radius: 6px;
+  padding: 0.15em 0.45em;
+}
+.setrow .setname {
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.setrow .setbar {
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  background: var(--line);
+  border-radius: 999px;
+}
+.setrow .setbar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+.setrow .setnum { font-variant-numeric: tabular-nums; font-size: 0.78rem; color: var(--muted); text-align: right; }
+.setrow .setpct { font-variant-numeric: tabular-nums; font-size: 0.78rem; font-weight: 700; color: var(--ink-soft); text-align: right; }
+.setrow.done .setbar i { background: var(--green); }
+.setrow.done .setpct { color: var(--green); }
+@media (max-width: 560px) {
+  .setrow { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+  .setrow .setbar { display: none; } /* the numbers already say it on a phone */
+}
