@@ -20,52 +20,71 @@
     </div>
   </header>
 
-  <section id="controls">
-    <div class="controls">
-      <label>Set
-        <select id="fset"><option value="">All sets</option></select>
-      </label>
-      <label>Sort
-        <select id="fsort">
-          <option value="name">Name (A–Z)</option>
-          <option value="price-desc" selected>Price (high → low)</option>
-          <option value="price-asc">Price (low → high)</option>
-          <option value="added">Recently added</option>
-        </select>
-      </label>
-      <label>Finish
-        <select id="ffinish">
-          <option value="">All</option>
-          <option value="foil">Foil</option>
-          <option value="nonfoil">Non-foil</option>
-        </select>
-      </label>
-      <label>Search
-        <input id="fq" type="search" placeholder="card name" autocomplete="off" />
-      </label>
-      <span class="stat" id="stat"></span>
+  <main class="layout">
+    <div class="col-main">
+      <section id="controls">
+        <div class="controls">
+          <label>Set
+            <select id="fset"><option value="">All sets</option></select>
+          </label>
+          <label>Sort
+            <select id="fsort">
+              <option value="name">Name (A–Z)</option>
+              <option value="price-desc" selected>Price (high → low)</option>
+              <option value="price-asc">Price (low → high)</option>
+              <option value="added">Recently added</option>
+            </select>
+          </label>
+          <label>Finish
+            <select id="ffinish">
+              <option value="">All</option>
+              <option value="foil">Foil</option>
+              <option value="nonfoil">Non-foil</option>
+            </select>
+          </label>
+          <label>Search
+            <input id="fq" type="search" placeholder="card name" autocomplete="off" />
+          </label>
+          <span class="stat" id="stat"></span>
+        </div>
+      </section>
+
+      <section id="value-wrap" hidden>
+        <h3>Collection value over time</h3>
+        <div id="portfolio"><p class="like-label">Loading price history…</p></div>
+      </section>
+
+      <section id="sets-wrap" hidden>
+        <h3>Set completion <span class="meta" id="setsum"></span></h3>
+        <div id="sets" class="setlist"></div>
+      </section>
+
+      <section id="grid-wrap">
+        <div id="grid"></div>
+        <p id="empty" class="like-label" hidden>No cards match these filters.</p>
+      </section>
     </div>
-  </section>
 
-  <section id="value-wrap" hidden>
-    <h3>Collection value over time</h3>
-    <div id="portfolio"><p class="like-label">Loading price history…</p></div>
-  </section>
+    <aside class="rail">
+      <section id="add">
+        <h2>Add cards</h2>
+        <p>Scan with the camera, upload an image, or search by name.</p>
+        <p><a class="cta" href="/">Open the scanner →</a></p>
+      </section>
 
-  <section id="sets-wrap" hidden>
-    <h3>Set completion <span class="meta" id="setsum"></span></h3>
-    <div id="sets" class="setlist"></div>
-  </section>
-
-  <section id="grid-wrap">
-    <div id="grid"></div>
-    <p id="empty" class="like-label" hidden>No cards match these filters.</p>
-  </section>
+      <section id="sell-card">
+        <h2>Sell plan</h2>
+        <div id="sell-teaser"><p class="like-label">Working out the numbers…</p></div>
+        <p><a class="cta" href="/sell.html">Open the sell plan →</a></p>
+      </section>
+    </aside>
+  </main>
 
   <div id="lightbox" hidden></div>
 
   <script type="module">
     import { $, escapeHtml } from '/shared.js';
+    import { mountSellTeaser } from '/rail.js';
 
     // price is a REAL column or null; guard null before Number() (which gives 0).
     const usd = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
@@ -604,6 +623,9 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
     load().catch((e) => { $('#stat').textContent = 'Could not load the collection: ' + e.message; });
+    // The rail card is about the collection as a whole, not the current
+    // filter, so it is filled once instead of on every render.
+    mountSellTeaser($('#sell-teaser'));
   </script>
 </body>
 </html>

@@ -20,42 +20,61 @@
     </div>
   </header>
 
-  <p id="econ-loading" class="like-label">Crunching the numbers…</p>
+  <main class="layout">
+    <div class="col-main">
+      <p id="econ-loading" class="like-label">Crunching the numbers…</p>
 
-  <section id="econ-empty" hidden>
-    <h2>Nothing to price yet</h2>
-    <p class="lede">The plan is arithmetic over the cards you own, so it needs a
-      collection first. Add a card and this page fills itself in.</p>
-    <p><a class="cta" href="/">Add cards to the collection →</a></p>
-  </section>
+      <section id="econ-empty" hidden>
+        <h2>Nothing to price yet</h2>
+        <p class="lede">The plan is arithmetic over the cards you own, so it needs a
+          collection first. Add a card and this page fills itself in.</p>
+        <p><a class="cta" href="/">Add cards to the collection →</a></p>
+      </section>
 
-  <p id="econ-error" class="like-label" hidden></p>
+      <p id="econ-error" class="like-label" hidden></p>
 
-  <section id="econ-wrap" hidden>
-    <p class="econ-summary" id="econ-sum"></p>
-    <div id="econ-insights" class="insights"></div>
-    <div id="econ-buckets" class="buckets"></div>
-    <div id="econ-cards"></div>
-    <details id="econ-assumptions">
-      <summary>Assumptions behind these numbers</summary>
-      <div class="econ-form">
-        <label>Platform <select id="e-platform"></select></label>
-        <label>Commission % <input id="e-commission" type="number" step="0.01" min="0" max="100" /></label>
-        <label>Payment fee % <input id="e-payment" type="number" step="0.01" min="0" max="100" /></label>
-        <label>Per-order fee $ <input id="e-orderfee" type="number" step="0.01" min="0" /></label>
-        <label>Postage per card $ <input id="e-postage" type="number" step="0.01" min="0" /></label>
-        <label>Price below market % <input id="e-undercut" type="number" step="0.5" min="0" max="100" /></label>
-        <label>Buylist pays % of market <input id="e-buylist" type="number" step="1" min="0" max="100" /></label>
-        <label>List only if net ≥ $ <input id="e-minnet" type="number" step="0.5" min="0" /></label>
-        <label>Cards I'll actually pack <input id="e-capacity" type="number" step="1" min="0" /></label>
-        <div class="econ-grades" id="e-grades"></div>
-        <p class="like-label" id="econ-note"></p>
-      </div>
-    </details>
-  </section>
+      <section id="econ-wrap" hidden>
+        <p class="econ-summary" id="econ-sum"></p>
+        <div id="econ-insights" class="insights"></div>
+        <div id="econ-buckets" class="buckets"></div>
+        <div id="econ-cards"></div>
+        <details id="econ-assumptions">
+          <summary>Assumptions behind these numbers</summary>
+          <div class="econ-form">
+            <label>Platform <select id="e-platform"></select></label>
+            <label>Commission % <input id="e-commission" type="number" step="0.01" min="0" max="100" /></label>
+            <label>Payment fee % <input id="e-payment" type="number" step="0.01" min="0" max="100" /></label>
+            <label>Per-order fee $ <input id="e-orderfee" type="number" step="0.01" min="0" /></label>
+            <label>Postage per card $ <input id="e-postage" type="number" step="0.01" min="0" /></label>
+            <label>Price below market % <input id="e-undercut" type="number" step="0.5" min="0" max="100" /></label>
+            <label>Buylist pays % of market <input id="e-buylist" type="number" step="1" min="0" max="100" /></label>
+            <label>List only if net ≥ $ <input id="e-minnet" type="number" step="0.5" min="0" /></label>
+            <label>Cards I'll actually pack <input id="e-capacity" type="number" step="1" min="0" /></label>
+            <div class="econ-grades" id="e-grades"></div>
+            <p class="like-label" id="econ-note"></p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="rail">
+      <section id="add">
+        <h2>Add cards</h2>
+        <p>Scan with the camera, upload an image, or search by name.</p>
+        <p><a class="cta" href="/">Open the scanner →</a></p>
+      </section>
+
+      <section id="col-card">
+        <h2>Collection</h2>
+        <div id="col-teaser"><p class="like-label">Counting…</p></div>
+        <p><a class="cta" href="/collection.html">Open the gallery →</a></p>
+      </section>
+    </aside>
+  </main>
 
   <script type="module">
     import { $, escapeHtml } from '/shared.js';
+    import { renderCollectionTeaser } from '/rail.js';
 
     // The retail benchmark is already in the collection — Scryfall's price is the
     // TCGplayer market price — so this is arithmetic over rows the server already
@@ -87,6 +106,9 @@
       $('#econ-loading').hidden = true;
       const wrap = $('#econ-wrap');
       const empty = $('#econ-empty');
+      // The rail's collection card reads the same totals this page already has,
+      // so "market value" here and in the plan can never disagree.
+      renderCollectionTeaser($('#col-teaser'), econ?.plan?.totals);
       // On a page of its own the section cannot simply hide itself, or the
       // reader is left staring at nothing: an empty collection gets an
       // explanation and a way back to the scanner.

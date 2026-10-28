@@ -110,19 +110,25 @@
     </div>
   </section>
 
-  <section id="col">
-    <h2>View collection (<span id="count">0</span> total)</h2>
-    <p class="cta-row">
-      <a class="cta" href="/collection.html">Open the collection gallery →</a>
-      <a class="cta" href="/sell.html">Sell plan →</a>
-    </p>
-    <div id="collection"></div>
-  </section>
+  <aside class="rail">
+    <section id="col">
+      <h2>View collection (<span id="count">0</span> total)</h2>
+      <p><a class="cta" href="/collection.html">Open the collection gallery →</a></p>
+      <div id="collection"></div>
+    </section>
+
+    <section id="sell">
+      <h2>Sell plan</h2>
+      <div id="sell-teaser"><p class="like-label">Working out the numbers…</p></div>
+      <p><a class="cta" href="/sell.html">Open the sell plan →</a></p>
+    </section>
+  </aside>
   </main>
 
   <script type="module">
     import { $, api, escapeHtml } from '/shared.js';
     import { createCamera } from '/camera.js';
+    import { mountSellTeaser } from '/rail.js';
 
     let currentImage = null;
     let lastDetect = null;
@@ -669,6 +675,9 @@
 
     renderAuto();
     loadCollection().catch((e) => console.error(e));
+    // The rail's sell-plan card carries the same two figures the plan page
+    // opens with, so the link says what it is worth before you click it.
+    mountSellTeaser($('#sell-teaser'));
   </script>
 </body>
 </html>

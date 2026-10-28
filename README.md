@@ -29,6 +29,14 @@ on it (see [Sell plan](#sell-plan)).
 | `/collection.html` | Gallery with filters, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count, grade). |
 | `/sell.html` | The sell plan: what the collection nets per route, the cards worth listing, editable assumptions, and the export files. |
 
+All three share one shell: the page's own work in a wide left column, and a rail
+on the right holding one small card per page you are **not** on. Each card
+carries a number or two from the page it points at — the collection's size and
+market value, the sell plan's two piles — so the link says what is behind it
+before you click. The rail is sticky (a 272-card gallery scrolls a long way),
+and below 760px it stacks under the content while the header pills take over the
+navigation.
+
 ## Setup
 
 Requires Node.js >= 22 and a Python environment for the OCR sidecar (there is no

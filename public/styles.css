@@ -44,7 +44,7 @@
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0 auto;
-  max-width: 960px;
+  max-width: 1060px;
   padding: clamp(18px, 3vw, 36px);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 16px;
@@ -123,7 +123,9 @@ h3::before {
   font-size: 1.03rem;
   color: var(--ink-soft);
 }
-.hero .aside { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.5em 0 0; }
+/* The rail carries navigation on wide screens; these pills are the fallback
+   once it stacks below the content (see the .layout media query). */
+.hero .aside { display: none; flex-wrap: wrap; gap: 8px; margin: 0.5em 0 0; }
 a.cta {
   display: inline-flex;
   align-items: center;
@@ -134,14 +136,14 @@ a.cta {
   border-radius: 999px;
   background: var(--accent-soft);
 }
-/* A row of pill links (gallery + sell plan on the home page). */
-.cta-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
-/* ---- Main page two-column layout -------------------------------------------- */
-/* Scan/add flow on the left, view-collection on the right. Stacks on narrow. */
+/* ---- Two-column layout: main on the left, a nav rail on the right ---------- */
+/* Every page uses this. The left column is the page's own job; the right rail
+   holds one small card per page you are not on, carrying a number or two from
+   it. Stacks on narrow screens, where the header pills take over the links. */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   gap: 18px;
   align-items: start;
   padding: 0;
@@ -151,11 +153,48 @@ a.cta {
   border-radius: 0;
   box-shadow: none;
 }
-.layout > section { margin: 0; }
-/* Main page gets ~20% more width (10% each side) for the two columns. */
-body:has(main.layout) { max-width: 1150px; }
+/* The left column is a single section on the home page, several elsewhere. */
+.layout > section,
+.col-main > section { margin: 0; }
+.col-main { display: grid; gap: 18px; align-content: start; min-width: 0; }
+/* Sticky: the gallery runs to hundreds of rows, and navigation is useless if
+   it scrolls away with the first screenful. */
+.rail { display: grid; gap: 18px; align-content: start; min-width: 0; position: sticky; top: 18px; }
+/* ~10% wider than the old two-column measure, which the rail now has to fit
+   inside without squeezing the gallery. */
+body:has(main.layout) { max-width: 1270px; }
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }
+  /* Stacked below the content, the rail must scroll with it. */
+  .rail { position: static; }
+  /* ...and the header pills carry the links again. */
+  .hero .aside { display: flex; }
+}
+
+/* ---- Rail teasers -------------------------------------------------------- */
+/* A number or two from the page the card points at. Quiet by design: the link
+   is the point, the figures are the reason to take it. */
+.teaser { display: grid; gap: 7px; margin: 0 0 12px; }
+.teaser > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.teaser dt { font-size: 0.8rem; color: var(--muted); }
+.teaser dd {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.teaser-foot {
+  margin: 10px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
 }
 
 /* ---- Cards -------------------------------------------------------------- */
