@@ -11,3 +11,6 @@ __pycache__/
 # The PP-OCR engine's Python environment (scripts/ppocr_sidecar.py): ~340MB of
 # runtime + models, rebuilt from tools/ppocr/setup.md rather than committed.
 tools/ppocr/venv/
+# Local container settings (copy .env.example). May hold deployment flags, not
+# secrets, but it is per-machine either way.
+.env

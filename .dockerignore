@@ -1,0 +1,23 @@
+# Keep the build context small. node_modules is reinstalled inside the image
+# from the lockfile, and the local OCR venv is ~340MB that the Dockerfile builds
+# its own copy of.
+node_modules
+tools/ppocr/venv
+data
+card scans
+debug-out
+__pycache__
+**/*.pyc
+
+# Not part of the app.
+.git
+.gitignore
+.gitattributes
+.workbuddy-ai
+test
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+*.log
+mass_upload_results.md

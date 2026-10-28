@@ -1,0 +1,16 @@
+# The repo is LF, and the container reads these files byte for byte: a CRLF
+# Dockerfile leaves a \r at the end of every continued RUN line, which the shell
+# inside the image reports as a missing file, and a CRLF .sh breaks its shebang.
+# core.autocrlf is on for Windows checkouts, so pin the line ending here instead
+# of relying on the local git config.
+* text=auto eol=lf
+
+# Binary formats are never normalised.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary

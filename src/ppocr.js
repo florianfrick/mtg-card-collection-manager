@@ -129,6 +129,15 @@ function stop() {
   if (c && !c.killed) c.kill();
 }
 
+/**
+ * Stop the sidecar for good — process shutdown. Not to be confused with the
+ * restart path above: this leaves `child` null and lets the next request spawn
+ * a fresh one, which is only correct when nothing will ask again.
+ */
+export function stopPpocr() {
+  stop();
+}
+
 /** The running sidecar, waiting out a crash backoff if one is in effect. */
 async function ensureChild() {
   if (child) return child;

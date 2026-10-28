@@ -7,7 +7,7 @@ import { namedFuzzy, printingsOf } from './scryfall.js';
 import {
   addEntry, listEntries, removeEntry, decrementEntry, incrementEntry, setEntryQuantity, setEntryFoil, setEntryCondition,
   priceHistory, portfolioHistory,
-  collectionSize, createUser, deleteUserSessions, findUserByUsername, mergeGuestInto, ownsEntry,
+  closeDatabase, collectionSize, countUsers, createUser, deleteUserSessions, findUserByUsername, mergeGuestInto, ownsEntry,
   publicUser, purgeExpiredSessions, purgeGuests, setUserCredentials, setUserPassword,
 } from './db.js';
 import {
@@ -15,6 +15,7 @@ import {
   noteFailure, requireIdentity, requireUser, sameOriginOnly, startSession, verifyPassword, withinLimit,
 } from './auth.js';
 import { numOrNull } from './util.js';
+import { ppocrStatus, stopPpocr } from './ppocr.js';
 import { startDailySnapshots } from './prices.js';
 import { setCompletion } from './sets.js';
 import {
@@ -27,6 +28,20 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 app.use(express.json({ limit: '40mb' })); // base64 scans can be large
 app.use(express.static(join(here, '..', 'public')));
+
+// Liveness/readiness for container orchestration. Deliberately outside /api:
+// a probe arrives with no cookie, and the identity middleware below would mint a
+// guest for every check. Cheap by design — one COUNT over `user`, no writes.
+// A missing OCR engine is reported but is not a failure: the collection still
+// works, only scanning does not.
+app.get('/healthz', (req, res) => {
+  try {
+    countUsers();
+    res.json({ ok: true, ocr: ppocrStatus().available });
+  } catch (e) {
+    res.status(503).json({ ok: false, error: String(e?.message || e) });
+  }
+});
 
 // Every request gets an identity: a signed-in account or a guest (an anonymous
 // visitor with a real collection, so cards can be added before signing up).
@@ -530,7 +545,7 @@ app.get('/api/economics/export', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`MTG Collection Manager running at http://localhost:${PORT}`);
   console.log(`auth: guests ${AUTH.allowGuests ? 'on' : 'off'} · sign-ups ${AUTH.allowSignup ? 'open' : 'closed'}`);
   // Keep the daily price history going while the server is up (idempotent/day).
@@ -551,3 +566,27 @@ app.listen(PORT, () => {
   housekeeping();
   setInterval(housekeeping, 6 * 60 * 60 * 1000).unref?.();
 });
+
+// Shutdown. `docker stop` sends SIGTERM and then waits: answer in-flight
+// requests, close the database cleanly and take the OCR child down with us,
+// rather than being killed mid-write. The timer is the backstop for a request
+// that will not finish (a stuck scan), so the container still exits in time.
+let closing = false;
+function shutdown(signal) {
+  if (closing) return;
+  closing = true;
+  console.log(`${signal}: shutting down`);
+  const done = () => {
+    try { stopPpocr(); } catch { /* already gone */ }
+    try { closeDatabase(); } catch { /* already closed */ }
+    process.exit(0);
+  };
+  server.close(done);
+  server.closeIdleConnections?.();
+  setTimeout(() => {
+    server.closeAllConnections?.();
+    done();
+  }, 8000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

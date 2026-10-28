@@ -43,6 +43,53 @@ tools\ppocr\venv\Scripts\python.exe -m pip install rapidocr onnxruntime
 npm start   # http://localhost:3000
 ```
 
+## Docker
+
+The same two runtimes in one image: Node for the app, Python for the OCR
+sidecar. They stay in one container because they are one process tree — the app
+spawns `scripts/ppocr_sidecar.py` and talks to it over stdin/stdout.
+
+```bash
+docker compose up -d --build     # http://localhost:3000
+docker compose logs -f app
+```
+
+The database lives in the `mtg-data` volume at `/data/mtg.db`, so rebuilding the
+image never touches the collection. Port and identity flags come from `.env`
+(copy `.env.example`).
+
+**Bringing an existing collection across.** The container starts with an empty
+database; copy yours in, then fix ownership (the app runs as uid 1000, and a
+copied file lands as root):
+
+```bash
+docker compose up -d
+docker compose cp data/mtg.db app:/data/mtg.db
+docker compose exec -u root app chown node:node /data/mtg.db
+docker compose restart app
+```
+
+To keep the database on the host instead of in a volume, swap the volume line in
+`docker-compose.yml` for `- ./data:/data` — that directory must be writable by
+uid 1000.
+
+Notes that matter in a container:
+
+- `PPOCR_PYTHON=/opt/ppocr/venv/bin/python` is set in the image; the code's
+  default path is the Windows layout (`tools/ppocr/venv/Scripts/python.exe`).
+- `GET /healthz` is the probe. It sits outside `/api` on purpose: a probe sends
+  no cookie, and the identity middleware would otherwise mint a guest on every
+  check. It answers `{"ok":true,"ocr":false}` when the OCR engine is missing —
+  the collection still works, only scanning does not.
+- `SIGTERM` closes the HTTP server, the database and the OCR child, so
+  `docker stop` is clean. Give it the 15s in `stop_grace_period`.
+- Behind a reverse proxy, forward the original `Host` header (`proxy_set_header
+  Host $host` in nginx). Cross-origin writes are refused by comparing the
+  `Origin` host to `Host`, so a rewritten `Host` turns every save into a 403.
+- The image is a few hundred MB (ONNX Runtime, OpenCV, the OCR models), and the
+  OCR models ship inside the `rapidocr` wheel — nothing is downloaded at
+  runtime. Tests are not in the image; run `npm test` on the host.
+
 ## Scripts
 
 | Command | Purpose |

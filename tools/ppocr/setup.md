@@ -22,3 +22,7 @@ and nothing is fetched at runtime.
 - `py -m venv` picks the newest installed Python; the interpreter first on `PATH`
   may be much older (here: 3.8.3), and `onnxruntime` 1.30 needs >= 3.11.
 - Point the app at a different environment with `PPOCR_PYTHON=<path to python.exe>`.
+
+In the container this step is not run by hand: the Dockerfile builds the same venv
+at `/opt/ppocr/venv` (Debian bookworm's Python 3.11) and sets
+`PPOCR_PYTHON=/opt/ppocr/venv/bin/python`.

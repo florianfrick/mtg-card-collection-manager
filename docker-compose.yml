@@ -1,0 +1,31 @@
+# docker compose up -d --build
+#
+# The database lives in the named volume `mtg-data`, so rebuilding the image
+# never touches the collection. See "Docker" in README.md for migrating an
+# existing data/mtg.db into it.
+
+services:
+  app:
+    build: .
+    image: mtg-collection-manager:latest
+    container_name: mtg-collection-manager
+    init: true # reap the OCR child process; Node is PID 1 here
+    restart: unless-stopped
+    stop_grace_period: 15s # src/index.js closes the DB and exits within ~8s
+    ports:
+      - "${MTG_PORT:-3000}:3000"
+    environment:
+      # Identity defaults. A public deployment wants sign-ups closed and secure
+      # cookies on; both are documented in README.md.
+      MTG_ALLOW_GUESTS: "${MTG_ALLOW_GUESTS:-true}"
+      MTG_ALLOW_SIGNUP: "${MTG_ALLOW_SIGNUP:-true}"
+      MTG_SECURE_COOKIES: "${MTG_SECURE_COOKIES:-false}"
+      MTG_SESSION_DAYS: "${MTG_SESSION_DAYS:-30}"
+    volumes:
+      - mtg-data:/data
+      # To keep the database on the host instead, drop the line above and use a
+      # bind mount — the directory must be writable by uid 1000 (the `node` user):
+      #   - ./data:/data
+
+volumes:
+  mtg-data:
