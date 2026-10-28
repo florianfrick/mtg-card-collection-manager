@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#fbf7f2" />
+  <meta name="description" content="What your Magic: The Gathering collection nets if you list it yourself versus dropping it in one box to a buylist — with the files to act on it." />
+  <title>MTG Collection Manager sell plan</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-main">
+      <h1 class="brand">MTG Collection Manager <span class="sub">sell plan</span></h1>
+      <p class="lede">What the collection nets if you list it yourself versus dropping it in one box — and the files to act on it.</p>
+      <p class="aside">
+        <a class="cta" href="/collection.html">← Collection</a>
+        <a class="cta" href="/">Home</a>
+      </p>
+    </div>
+  </header>
+
+  <p id="econ-loading" class="like-label">Crunching the numbers…</p>
+
+  <section id="econ-empty" hidden>
+    <h2>Nothing to price yet</h2>
+    <p class="lede">The plan is arithmetic over the cards you own, so it needs a
+      collection first. Add a card and this page fills itself in.</p>
+    <p><a class="cta" href="/">Add cards to the collection →</a></p>
+  </section>
+
+  <p id="econ-error" class="like-label" hidden></p>
+
+  <section id="econ-wrap" hidden>
+    <p class="econ-summary" id="econ-sum"></p>
+    <div id="econ-insights" class="insights"></div>
+    <div id="econ-buckets" class="buckets"></div>
+    <div id="econ-cards"></div>
+    <details id="econ-assumptions">
+      <summary>Assumptions behind these numbers</summary>
+      <div class="econ-form">
+        <label>Platform <select id="e-platform"></select></label>
+        <label>Commission % <input id="e-commission" type="number" step="0.01" min="0" max="100" /></label>
+        <label>Payment fee % <input id="e-payment" type="number" step="0.01" min="0" max="100" /></label>
+        <label>Per-order fee $ <input id="e-orderfee" type="number" step="0.01" min="0" /></label>
+        <label>Postage per card $ <input id="e-postage" type="number" step="0.01" min="0" /></label>
+        <label>Price below market % <input id="e-undercut" type="number" step="0.5" min="0" max="100" /></label>
+        <label>Buylist pays % of market <input id="e-buylist" type="number" step="1" min="0" max="100" /></label>
+        <label>List only if net ≥ $ <input id="e-minnet" type="number" step="0.5" min="0" /></label>
+        <label>Cards I'll actually pack <input id="e-capacity" type="number" step="1" min="0" /></label>
+        <div class="econ-grades" id="e-grades"></div>
+        <p class="like-label" id="econ-note"></p>
+      </div>
+    </details>
+  </section>
+
+  <script type="module">
+    import { $, escapeHtml } from '/shared.js';
+
+    // The retail benchmark is already in the collection — Scryfall's price is the
+    // TCGplayer market price — so this is arithmetic over rows the server already
+    // has. The server owns the math (src/economics.js) and stores the
+    // assumptions; this page owns the controls. Every figure is an estimate, and
+    // the note under the form says so rather than pretending to precision.
+
+    let econ = null; // last payload: { settings, plan, insights, platforms, defaults }
+    let formBuilt = false;
+    let showAllListed = false;
+
+    const usd2 = (v) => (v == null ? '—' : '$' + Number(v).toFixed(2));
+
+    async function loadEcon() {
+      try {
+        const res = await fetch('/api/economics');
+        if (!res.ok) throw new Error('the server returned ' + res.status);
+        econ = await res.json();
+        renderEcon();
+      } catch (e) {
+        $('#econ-loading').hidden = true;
+        const err = $('#econ-error');
+        err.hidden = false;
+        err.textContent = 'Could not load the sell plan: ' + e.message;
+      }
+    }
+
+    function renderEcon() {
+      $('#econ-loading').hidden = true;
+      const wrap = $('#econ-wrap');
+      const empty = $('#econ-empty');
+      // On a page of its own the section cannot simply hide itself, or the
+      // reader is left staring at nothing: an empty collection gets an
+      // explanation and a way back to the scanner.
+      if (!econ?.plan?.totals?.rows) {
+        wrap.hidden = true;
+        empty.hidden = false;
+        return;
+      }
+      empty.hidden = true;
+      wrap.hidden = false;
+
+      const p = econ.plan;
+      const b = p.buckets;
+      // The number the page exists for is the headline, not a caption.
+      $('#econ-sum').innerHTML =
+        `<strong>${usd2(p.totals.net)}</strong> if you sell both piles` +
+        `<span class="econ-sep">·</span>${usd2(p.totals.market)} at market`;
+
+      $('#econ-insights').innerHTML = (econ.insights || [])
+        .map((i) => `<p class="insight ${escapeHtml(i.tone)}">${escapeHtml(i.text)}</p>`)
+        .join('');
+
+      $('#econ-buckets').innerHTML =
+        `<div class="bucket list">` +
+          `<span class="bucket-label">List individually</span>` +
+          `<strong class="bucket-net">${usd2(b.list.net)}</strong>` +
+          `<span class="bucket-meta">${b.list.copies} ${b.list.copies === 1 ? 'card' : 'cards'} · ${b.list.count} ${b.list.count === 1 ? 'listing' : 'listings'}</span>` +
+          `<button class="bucket-dl" data-format="tcgplayer" data-bucket="list"${b.list.count ? '' : ' disabled'}>TCGplayer inventory CSV</button>` +
+        `</div>` +
+        `<div class="bucket box">` +
+          `<span class="bucket-label">One box to a buylist</span>` +
+          `<strong class="bucket-net">${usd2(b.box.net)}</strong>` +
+          `<span class="bucket-meta">${b.box.copies} ${b.box.copies === 1 ? 'card' : 'cards'} · ${b.box.count} rows</span>` +
+          `<button class="bucket-dl" data-format="buylist" data-bucket="box"${b.box.count ? '' : ' disabled'}>Buylist order CSV</button>` +
+          `<button class="bucket-dl ghost" data-format="list" data-bucket="box"${b.box.count ? '' : ' disabled'}>Paste-a-list .txt</button>` +
+        `</div>` +
+        `<div class="bucket skip">` +
+          `<span class="bucket-label">Not worth shipping</span>` +
+          `<strong class="bucket-net">${usd2(b.ignore.market)}</strong>` +
+          `<span class="bucket-meta">${b.ignore.copies} ${b.ignore.copies === 1 ? 'card' : 'cards'} · postage costs more</span>` +
+        `</div>`;
+
+      $('#econ-buckets').querySelectorAll('.bucket-dl').forEach((btn) => {
+        btn.addEventListener('click', () => downloadEcon(btn.dataset.format, btn.dataset.bucket));
+      });
+
+      // The listed cards, best gain first: what to photograph and pack.
+      const rows = b.list.cards;
+      const shown = showAllListed ? rows : rows.slice(0, 12);
+      $('#econ-cards').innerHTML = rows.length
+        ? `<table class="econ-table"><thead><tr>` +
+            `<th>Card</th><th>Grade</th><th class="num">Market</th><th class="num">List at</th><th class="num">Net</th>` +
+          `</tr></thead><tbody>${shown.map(econRow).join('')}</tbody></table>` +
+          (rows.length > 12
+            ? `<p class="like-label"><button class="more" id="econ-more">${showAllListed ? 'Show fewer' : `Show all ${rows.length}`}</button></p>`
+            : '')
+        : `<p class="like-label">Nothing clears the net floor right now — the whole collection belongs in one box or stays put.</p>`;
+      const more = $('#econ-more');
+      if (more) more.addEventListener('click', () => { showAllListed = !showAllListed; renderEcon(); });
+
+      buildEconForm();
+      fillEconForm(p.settings);
+    }
+
+    function econRow(c) {
+      const grade = c.condition === 'NM' ? '' : `<span class="cond-tag">${escapeHtml(c.condition)}</span>`;
+      return `<tr>` +
+        `<td><span class="econ-name">${escapeHtml(c.name)}</span>` +
+        `<span class="econ-sub">${escapeHtml((c.set_code || '').toUpperCase())} #${escapeHtml(c.collector_number || '')}${c.quantity > 1 ? ` ×${c.quantity}` : ''}</span></td>` +
+        `<td>${grade}${c.foil ? '<span class="cond-tag foil">foil</span>' : ''}</td>` +
+        `<td class="num">${usd2(c.market)}</td>` +
+        `<td class="num">${usd2(c.ask)}</td>` +
+        `<td class="num strong">${usd2(c.retailNet)}</td>` +
+      `</tr>`;
+    }
+
+    /** Build the controls once; later renders only update their values. */
+    function buildEconForm() {
+      if (formBuilt || !econ?.platforms) return;
+      formBuilt = true;
+      $('#e-platform').innerHTML = Object.entries(econ.platforms)
+        .map(([id, p]) => `<option value="${escapeHtml(id)}">${escapeHtml(p.label)}</option>`)
+        .join('');
+      $('#e-grades').innerHTML = ['NM', 'LP', 'MP', 'HP', 'DMG']
+        .map((code) => `<label>${code} <input class="e-grade" data-code="${code}" type="number" step="0.01" min="0" max="1" /></label>`)
+        .join('');
+      $('#econ-note').textContent =
+        'Commission and per-order fees are published rates; postage, undercut, the buylist rate and the grade multipliers are your assumptions. '
+        + 'Retail figures also assume the card actually sells.';
+
+      const num = (id, key, cast = Number) => {
+        $(id).addEventListener('change', () => {
+          const raw = $(id).value.trim();
+          if (raw === '') return;
+          saveEcon({ [key]: cast(raw) });
+        });
+      };
+      $('#e-platform').addEventListener('change', () => saveEcon({ platform: $('#e-platform').value }));
+      num('#e-commission', 'commissionPct');
+      num('#e-payment', 'paymentPct');
+      num('#e-orderfee', 'perOrderFee');
+      num('#e-postage', 'postage');
+      num('#e-undercut', 'undercutPct');
+      num('#e-buylist', 'buylistRatePct');
+      num('#e-minnet', 'minNet');
+      num('#e-capacity', 'capacity');
+      // The whole grade map goes back, not just the edited code: a partial map
+      // would reset every other grade to its default.
+      $('#e-grades').addEventListener('change', () => {
+        const factors = {};
+        $('#e-grades').querySelectorAll('.e-grade').forEach((i) => {
+          if (i.value.trim() !== '') factors[i.dataset.code] = Number(i.value);
+        });
+        saveEcon({ conditionFactors: factors });
+      });
+    }
+
+    function fillEconForm(s) {
+      if (!s) return;
+      const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+      $('#e-platform').value = s.platform;
+      set('#e-commission', s.commissionPct);
+      set('#e-payment', s.paymentPct);
+      set('#e-orderfee', s.perOrderFee);
+      set('#e-postage', s.postage);
+      set('#e-undercut', s.undercutPct);
+      set('#e-buylist', s.buylistRatePct);
+      set('#e-minnet', s.minNet);
+      set('#e-capacity', s.capacity);
+      $('#e-grades').querySelectorAll('.e-grade').forEach((i) => {
+        const v = s.conditionFactors?.[i.dataset.code];
+        if (v != null && document.activeElement !== i) i.value = v;
+      });
+    }
+
+    async function saveEcon(patch) {
+      try {
+        const res = await fetch('/api/economics/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'the server returned ' + res.status);
+        econ = { ...econ, ...data };
+        renderEcon();
+      } catch (e) {
+        $('#econ-note').textContent = 'Could not save: ' + e.message;
+      }
+    }
+
+    /** A download is a plain GET with an attachment header — no blob juggling. */
+    function downloadEcon(format, bucket) {
+      location.href = `/api/economics/export?format=${encodeURIComponent(format)}&bucket=${encodeURIComponent(bucket)}`;
+    }
+
+    loadEcon();
+  </script>
+</body>
+</html>

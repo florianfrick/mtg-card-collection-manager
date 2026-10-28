@@ -123,7 +123,7 @@ h3::before {
   font-size: 1.03rem;
   color: var(--ink-soft);
 }
-.hero .aside { margin: 0.5em 0 0; }
+.hero .aside { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.5em 0 0; }
 a.cta {
   display: inline-flex;
   align-items: center;
@@ -134,6 +134,8 @@ a.cta {
   border-radius: 999px;
   background: var(--accent-soft);
 }
+/* A row of pill links (gallery + sell plan on the home page). */
+.cta-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---- Main page two-column layout -------------------------------------------- */
 /* Scan/add flow on the left, view-collection on the right. Stacks on narrow. */
@@ -738,17 +740,26 @@ summary::marker { color: var(--accent); }
   .setrow { grid-template-columns: auto minmax(0, 1fr) auto auto; }
   .setrow .setbar { display: none; } /* the numbers already say it on a phone */
 }
-/* ---- Sell plan (collection page) ---------------------------------------- */
+/* ---- Sell plan page (sell.html) ----------------------------------------- */
 /* The numbers are estimates, so the design keeps them quiet and factual:
    no gradients, no celebratory colour on money — just figures, then the
    sentences that explain them. */
-#econ-wrap h3 .meta {
-  font-size: 0.78rem;
-  font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--muted);
+.econ-summary {
+  margin: 0 0 14px;
+  font-size: 1rem;
+  color: var(--ink-soft);
 }
+/* The figure the page exists for is the headline, not a caption. */
+.econ-summary strong {
+  margin-right: 0.3em;
+  font-size: 1.62rem;
+  font-weight: 780;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.econ-sep { margin: 0 0.55em; color: var(--line-strong); }
+#econ-error { color: #a3321f; }
 .insights { margin: 0 0 14px; }
 .insight {
   margin: 0 0 6px;

@@ -17,16 +17,17 @@ collection); each finish is its own row with its own price. There are no
 accounts: the app serves one collection, the one in its database.
 
 Every copy also carries a **grade** (NM / LP / MP / HP / DMG), set when you add
-it and editable later. The collection page turns that into a **sell plan**: what
-each card nets if you list it yourself versus dropping it in one box, and the
-files to act on it (see [Sell plan](#sell-plan)).
+it and editable later. The sell plan page turns that into a plan: what each card
+nets if you list it yourself versus dropping it in one box, and the files to act
+on it (see [Sell plan](#sell-plan)).
 
 ## Pages
 
 | Page | What it does |
 | --- | --- |
 | `/` | Add cards: **camera** (hold cards one at a time), **image upload**, or **name search**. Camera mode used to be a separate page and now lives in the first section here. |
-| `/collection.html` | Gallery with filters, a sell plan, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count, grade). |
+| `/collection.html` | Gallery with filters, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count, grade). |
+| `/sell.html` | The sell plan: what the collection nets per route, the cards worth listing, editable assumptions, and the export files. |
 
 ## Setup
 
@@ -110,8 +111,10 @@ Notes that matter in a container:
 
 ## Sell plan
 
-The collection page answers a narrower question than "what is this worth":
-**what should I do with each card, and what does each route actually pay?**
+`/sell.html` answers a narrower question than "what is this worth": **what
+should I do with each card, and what does each route actually pay?** It is its
+own page rather than a section on the gallery because it is a different job —
+the gallery is for finding a card, this is for deciding what to do with it.
 
 The retail benchmark is already stored — Scryfall's `usd` *is* the TCGplayer
 market price — so the comparison needs no credentials and no network. Each card
