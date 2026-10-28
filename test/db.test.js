@@ -168,3 +168,85 @@ test('the account a guest becomes keeps its collection', () => {
   assert.equal(Number(upgraded.is_guest), 0);
   assert.equal(db.collectionSize(guest.id).rows, 1);
 });
+
+// ---- condition (grade) -----------------------------------------------------
+//
+// A grade is part of a row's identity, like the finish: an NM copy and an LP
+// copy of the same printing are worth different money, so they are different
+// rows and neither may silently absorb the other.
+
+test('a card added without a grade is near mint', () => {
+  const u = user();
+  const { entry } = db.addEntry(card(), u.id);
+  assert.equal(entry.condition, 'NM');
+});
+
+test('an LP copy is its own row, separate from the NM copy', () => {
+  const u = user();
+  const c = card();
+  db.addEntry(c, u.id, 2);
+  db.addEntry({ ...c, condition: 'LP' }, u.id);
+  const rows = db.listEntries(u.id);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => r.condition).sort(), ['LP', 'NM']);
+  assert.equal(rows.find((r) => r.condition === 'NM').quantity, 2);
+});
+
+test('a grade that does not exist is refused instead of quietly becoming NM', () => {
+  const u = user();
+  assert.throws(() => db.addEntry({ ...card(), condition: 'MINT' }, u.id), /condition must be one of/);
+  assert.equal(db.listEntries(u.id).length, 0);
+});
+
+test('grades are matched case-insensitively', () => {
+  const u = user();
+  const { entry } = db.addEntry({ ...card(), condition: 'lp' }, u.id);
+  assert.equal(entry.condition, 'LP');
+});
+
+test('re-grading into a grade already owned merges the rows', () => {
+  const u = user();
+  const c = card();
+  db.addEntry(c, u.id, 1);
+  const { entry: lp } = db.addEntry({ ...c, condition: 'LP' }, u.id, 2);
+  const merged = db.setEntryCondition(lp.id, 'NM', u.id);
+  assert.equal(merged.condition, 'NM');
+  assert.equal(merged.quantity, 3, 'the copies add up');
+  assert.equal(db.listEntries(u.id).length, 1);
+});
+
+test('a grade change keeps the finish', () => {
+  const u = user();
+  const { entry } = db.addEntry({ ...card(), foil: true }, u.id);
+  const regraded = db.setEntryCondition(entry.id, 'MP', u.id);
+  assert.equal(regraded.condition, 'MP');
+  assert.equal(Number(regraded.foil), 1);
+});
+
+test('a card nobody owns is reported as an orphan once its last row is gone', () => {
+  const u = user();
+  const c = card();
+  const { entry } = db.addEntry(c, u.id);
+  assert.equal(db.orphanCards().some((o) => o.scryfall_id === c.scryfall_id), false);
+  db.removeEntry(entry.id, u.id);
+  assert.equal(db.orphanCards().some((o) => o.scryfall_id === c.scryfall_id), true);
+});
+
+test('sweeping orphans drops the card and its price history, and nothing owned', () => {
+  const u = user();
+  const kept = card();
+  const dropped = card();
+  db.addEntry(kept, u.id);
+  db.addEntry(dropped, u.id);
+  db.recordPrices([{ scryfall_id: dropped.scryfall_id, price_usd: 3 }]);
+  const droppedId = db.listEntries(u.id).find((e) => e.scryfall_id === dropped.scryfall_id).id;
+  db.removeEntry(droppedId, u.id);
+
+  const before = db.orphanCards().length;
+  const { removed, snapshots } = db.deleteOrphanCards();
+  assert.equal(removed, before);
+  assert.ok(snapshots >= 1, 'the orphan carried a price snapshot');
+  // Nothing unowned is left — a surviving card row would still show up here.
+  assert.equal(db.orphanCards().length, 0);
+  assert.equal(db.listEntries(u.id).length, 1, 'the owned card survives');
+});

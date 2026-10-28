@@ -38,6 +38,15 @@
           </select>
         </label>
         <label class="foil-toggle"><input type="checkbox" id="camfoil" /> ✨ Foil cards</label>
+        <label class="cond-pick">Grade
+          <select id="camcondition">
+            <option value="NM" selected>NM</option>
+            <option value="LP">LP</option>
+            <option value="MP">MP</option>
+            <option value="HP">HP</option>
+            <option value="DMG">DMG</option>
+          </select>
+        </label>
       </p>
       <div id="cams">
         <video id="video" playsinline muted hidden></video>
@@ -57,14 +66,36 @@
     <input id="q" placeholder="e.g. Lightning Bolt" size="30" />
     <button id="search">Search</button>
     <button id="clear" disabled>Clear</button>
-    <p><label class="foil-toggle"><input type="checkbox" id="searchfoil" /> ✨ Add as foil</label></p>
+    <p>
+      <label class="foil-toggle"><input type="checkbox" id="searchfoil" /> ✨ Add as foil</label>
+      <label class="cond-pick">Grade
+        <select id="searchcondition">
+          <option value="NM" selected>NM</option>
+          <option value="LP">LP</option>
+          <option value="MP">MP</option>
+          <option value="HP">HP</option>
+          <option value="DMG">DMG</option>
+        </select>
+      </label>
+    </p>
     <div id="searchres"></div>
 
     <h3>By image</h3>
     <input type="file" id="file" accept="image/*" />
     <span id="imgwrap"><img id="preview" alt="" hidden /><canvas id="ocrlayer" hidden></canvas><div id="tip" hidden></div></span>
     <p id="quality" class="like-label" hidden></p>
-    <p><label class="foil-toggle"><input type="checkbox" id="foil" /> ✨ Add as foil</label></p>
+    <p>
+      <label class="foil-toggle"><input type="checkbox" id="foil" /> ✨ Add as foil</label>
+      <label class="cond-pick">Grade
+        <select id="condition">
+          <option value="NM" selected>NM</option>
+          <option value="LP">LP</option>
+          <option value="MP">MP</option>
+          <option value="HP">HP</option>
+          <option value="DMG">DMG</option>
+        </select>
+      </label>
+    </p>
     <p><button id="detect" disabled>Process Image</button></p>
 
     <div id="ocrread" hidden></div>
@@ -146,7 +177,12 @@
         // foil: the manual toggle above — the copy lands as foil when checked.
         const r = await api('/api/detect', {
           method: 'POST',
-          body: JSON.stringify({ image: currentImage, autoAdd: true, foil: $('#foil').checked }),
+          body: JSON.stringify({
+            image: currentImage,
+            autoAdd: true,
+            foil: $('#foil').checked,
+            condition: $('#condition').value,
+          }),
         });
         lastDetect = r;
         lastIdentified = r.identified || null;
@@ -430,10 +466,11 @@
 
     async function addCandidate(card, source = 'manual') {
       try {
-        // Each flow has its own foil toggle: the scan section's checkbox for
+        // Each flow has its own foil and grade controls: the scan section's for
         // scan picks, the search section's for name-search adds.
         const foil = source === 'scan' ? $('#foil').checked : $('#searchfoil').checked;
-        const res = await api('/api/collection', { method: 'POST', body: JSON.stringify({ ...card, foil }) });
+        const condition = source === 'scan' ? $('#condition').value : $('#searchcondition').value;
+        const res = await api('/api/collection', { method: 'POST', body: JSON.stringify({ ...card, foil, condition }) });
         if (source === 'scan') setAdded(card, res, 'manual'); // confirmed by hand
         else loadCollection();
       } catch (err) {
@@ -445,9 +482,10 @@
     async function replaceWith(card) {
       const prev = autoEntry;
       try {
-        // The foil checkbox of the scan section governs the replacement too.
+        // The scan section's foil and grade controls govern the replacement too.
         const res = await api('/api/collection', {
-          method: 'POST', body: JSON.stringify({ ...card, foil: $('#foil').checked }),
+          method: 'POST',
+          body: JSON.stringify({ ...card, foil: $('#foil').checked, condition: $('#condition').value }),
         });
         if (prev?.id) await api('/api/collection/' + prev.id, { method: 'DELETE' });
         setAdded(card, res, 'manual');

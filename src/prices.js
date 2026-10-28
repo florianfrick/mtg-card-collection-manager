@@ -23,8 +23,10 @@ export async function snapshotPrices() {
     scryfall_id: id,
     price_usd: prices.get(id)?.usd ?? null,
     price_usd_foil: prices.get(id)?.usd_foil ?? null,
-    // Same response, no extra request: fills in a rarity an older add missed.
+    // Same response, no extra request: fills in a rarity or a TCGplayer id an
+    // older add missed (the listing export keys on the latter).
     rarity: prices.get(id)?.rarity ?? null,
+    tcgplayer_id: prices.get(id)?.tcgplayer_id ?? null,
   }));
   const written = recordPrices(rows);
   return {

@@ -79,12 +79,20 @@ test('the batch price call stays inside 75 identifiers per request', async () =>
   assert.equal(bodies[1].identifiers.length, 5);
 });
 
-test('the batch price call carries rarity and keeps a missing foil price null', async () => {
+test('the batch price call carries rarity, the TCGplayer id and a null foil price', async () => {
   const prices = await withFetch(
-    async () => json({ data: [{ id: 'abc', rarity: 'mythic', prices: { usd: '3.25', usd_foil: null } }] }),
+    async () => json({ data: [{ id: 'abc', rarity: 'mythic', tcgplayer_id: 12345, prices: { usd: '3.25', usd_foil: null } }] }),
     () => sf.pricesForIds(['abc'])
   );
-  assert.deepEqual(prices.get('abc'), { usd: 3.25, usd_foil: null, rarity: 'mythic' });
+  assert.deepEqual(prices.get('abc'), { usd: 3.25, usd_foil: null, rarity: 'mythic', tcgplayer_id: 12345 });
+});
+
+test('a printing keeps the TCGplayer id a listing file keys on', () => {
+  const p = sf.toPrinting({ id: 'abc', name: 'X', set: 'tst', collector_number: '1', tcgplayer_id: 987 });
+  assert.equal(p.tcgplayer_id, 987);
+  // Cards Scryfall has no TCGplayer product for (rare, but real) stay null
+  // rather than becoming 0, which would look like a valid id.
+  assert.equal(sf.toPrinting({ id: 'def', name: 'Y', set: 'tst', collector_number: '2' }).tcgplayer_id, null);
 });
 
 test('a printing is normalised to the shape the app stores', () => {

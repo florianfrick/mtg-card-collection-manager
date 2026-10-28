@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { detectCard } from './detect.js';
 import { namedFuzzy, printingsOf } from './scryfall.js';
 import {
-  addEntry, listEntries, removeEntry, decrementEntry, incrementEntry, setEntryQuantity, setEntryFoil, priceHistory, portfolioHistory,
+  addEntry, listEntries, removeEntry, decrementEntry, incrementEntry, setEntryQuantity, setEntryFoil, setEntryCondition,
+  priceHistory, portfolioHistory,
   collectionSize, createUser, deleteUserSessions, findUserByUsername, mergeGuestInto, ownsEntry,
   publicUser, purgeExpiredSessions, purgeGuests, setUserCredentials, setUserPassword,
 } from './db.js';
@@ -16,6 +17,9 @@ import {
 import { numOrNull } from './util.js';
 import { startDailySnapshots } from './prices.js';
 import { setCompletion } from './sets.js';
+import {
+  DEFAULT_SETTINGS, PLATFORMS, buylistCsv, insights, loadSettings, plan, plainList, saveSettings, tcgplayerCsv,
+} from './economics.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -186,8 +190,10 @@ const AUTO_ADD_MIN_LIKELIHOOD = numOrNull(process.env.MTG_AUTO_ADD_MIN) ?? 0.5;
 /** Map a detected candidate / manual POST body onto a collection row.
  * `foil` (manual flag — there is no foil detection yet) picks the foil price:
  * a foil copy is worth its own number, so it stores usd_foil, not usd.
- * `rarity` travels with every candidate; dropping it here is what used to leave
- * the column empty for every card in the database. */
+ * `condition` is the manual grade; absent means near mint, and an unknown grade
+ * is rejected by addEntry rather than quietly stored as NM.
+ * `rarity` and `tcgplayer_id` travel with every candidate; dropping them here is
+ * what used to leave the columns empty for every card in the database. */
 function entryFromBody(b = {}) {
   const foil = b.foil === true || b.foil === 1;
   return {
@@ -198,7 +204,9 @@ function entryFromBody(b = {}) {
     collector_number: b.collector_number,
     rarity: b.rarity ?? null,
     image_url: b.image_url,
+    tcgplayer_id: b.tcgplayer_id ?? null,
     foil,
+    condition: b.condition ?? undefined,
     price_usd: foil
       ? (b.prices?.usd_foil ?? b.price_usd ?? null)
       : (b.prices?.usd ?? b.price_usd ?? null),
@@ -211,10 +219,10 @@ function entryFromBody(b = {}) {
  * that can't be added still returns its candidates, with a `reason`.
  * A printing already owned is NOT an error — this call just adds another
  * copy (see addEntry): `newCopy` tells the UI first-copy vs top-up apart.
- * `foil` is the UI's manual toggle; when set, the copy lands as foil (own row,
- * foil price).
+ * `foil` and `condition` are the UI's manual toggles for this scan; when set,
+ * the copy lands as foil (own row, foil price) and/or as that grade (own row).
  */
-function autoAdd(candidates, userId, foil = false) {
+function autoAdd(candidates, userId, { foil = false, condition = undefined } = {}) {
   const candidate = candidates?.[0] ?? null;
   if (!candidate) {
     return { added: false, candidate: null, reason: 'no-match', threshold: AUTO_ADD_MIN_LIKELIHOOD };
@@ -224,8 +232,8 @@ function autoAdd(candidates, userId, foil = false) {
     return { added: false, candidate, likelihood, reason: 'low-likelihood', threshold: AUTO_ADD_MIN_LIKELIHOOD };
   }
   try {
-    const { entry, newCopy, addedCopies } = session(userId).add(entryFromBody({ ...candidate, foil }));
-    return { added: true, newCopy, addedCopies, candidate, likelihood, entry, foil: !!foil };
+    const { entry, newCopy, addedCopies } = session(userId).add(entryFromBody({ ...candidate, foil, condition }));
+    return { added: true, newCopy, addedCopies, candidate, likelihood, entry, foil: !!foil, condition: entry?.condition ?? null };
   } catch (e) {
     return { added: false, candidate, likelihood, reason: 'error', message: String(e?.message || e) };
   }
@@ -261,14 +269,16 @@ app.post('/api/detect', async (req, res) => {
 
     // Opt-in (`autoAdd: true`, used by the UIs): store the most likely printing
     // right here, so one scan = one round trip. Off by default, which keeps
-    // /api/detect read-only for the CLI and the smoke test. `foil` is the
-    // UI's manual toggle for this scan — nothing detects foil automatically.
+    // /api/detect read-only for the CLI and the smoke test. `foil` and
+    // `condition` are the UI's manual toggles for this scan — nothing detects
+    // either automatically.
     const foil = req.body?.foil === true || req.body?.foil === 1;
+    const condition = typeof req.body?.condition === 'string' ? req.body.condition : undefined;
     const autoAdded = req.body?.autoAdd !== true ? null
       // Camera mode: same card as the previous frame -> keep what the client
       // already shows, don't add anything again.
       : unchanged ? { added: false, candidate: null, reason: 'same-card' }
-      : autoAdd(shortlist, req.userId, foil);
+      : autoAdd(shortlist, req.userId, { foil, condition });
 
     res.json({
       text,
@@ -325,6 +335,7 @@ app.get('/api/printings', async (req, res) => {
 //   POST   /api/collection/:id/decrement { n? } -> remove n copies (default 1)
 //   POST   /api/collection/:id/foil   { foil } -> flip the finish (merges with
 //                                                 an owned row of that finish)
+//   POST   /api/collection/:id/condition { condition } -> re-grade (same merge)
 //   DELETE /api/collection/:id        drop the row whatever the count
 
 app.get('/api/collection', (req, res) => {
@@ -395,6 +406,19 @@ app.post('/api/collection/:id/foil', (req, res) => {
   }
 });
 
+app.post('/api/collection/:id/condition', (req, res) => {
+  try {
+    const s = session(req.userId);
+    if (!s.owns(req.params.id)) return res.status(404).json({ error: 'not found' });
+    // Re-grading may merge this row into one already owned at that grade, so the
+    // answer is the *surviving* row (its id can differ from the id posted).
+    const entry = setEntryCondition(req.params.id, req.body?.condition, req.userId);
+    res.json({ entry });
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
 app.delete('/api/collection/:id', (req, res) => {
   try {
     // Deleting something that is not there (or not yours) is a 404, not a
@@ -433,6 +457,74 @@ app.get('/api/prices/:scryfall_id', (req, res) => {
 app.get('/api/sets', async (req, res) => {
   try {
     res.json(await setCompletion(req.userId));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ---- Economics: what the collection raises, and where ----------------------
+//
+// The retail benchmark is already in the database (Scryfall's `usd` is the
+// TCGplayer market price), so the comparison needs no credentials and no network
+// — it is arithmetic over the rows the collection page already fetched. The
+// settings are the assumptions that arithmetic rests on, and the user owns them.
+
+/** The plan under the caller's own assumptions, plus the sentences that explain it. */
+function economicsFor(userId) {
+  const settings = loadSettings(userId);
+  const p = plan(listEntries(userId), settings);
+  return { settings, plan: p, insights: insights(p) };
+}
+
+app.get('/api/economics', (req, res) => {
+  try {
+    res.json({ ...economicsFor(req.userId), platforms: PLATFORMS, defaults: DEFAULT_SETTINGS });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+/** Save assumptions (partial patch) and answer with the plan they produce. */
+app.put('/api/economics/settings', (req, res) => {
+  try {
+    // Validation happens before anything is written: a bad number must not
+    // become a stored NaN that makes every card look worthless.
+    const settings = saveSettings(req.userId, req.body ?? {});
+    const p = plan(listEntries(req.userId), settings);
+    res.json({ settings, plan: p, insights: insights(p) });
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
+// The files each route actually wants. `bucket` is which half of the plan the
+// format is for: a marketplace inventory file lists cards, a buylist order ships
+// a box — they are not the same list and must not be mixed.
+const EXPORTS = {
+  tcgplayer: { name: 'tcgplayer-inventory', ext: 'csv', type: 'text/csv', bucket: 'list', build: tcgplayerCsv },
+  buylist: { name: 'buylist-order', ext: 'csv', type: 'text/csv', bucket: 'box', build: buylistCsv },
+  list: { name: 'buylist-list', ext: 'txt', type: 'text/plain', bucket: 'box', build: plainList },
+};
+
+app.get('/api/economics/export', (req, res) => {
+  try {
+    const format = String(req.query.format ?? 'tcgplayer').toLowerCase();
+    const spec = EXPORTS[format];
+    if (!spec) return res.status(400).json({ error: `format must be one of ${Object.keys(EXPORTS).join(', ')}` });
+    const bucket = String(req.query.bucket ?? spec.bucket).toLowerCase();
+    if (bucket !== 'list' && bucket !== 'box') {
+      return res.status(400).json({ error: 'bucket must be "list" or "box"' });
+    }
+    const { plan: p } = economicsFor(req.userId);
+    const built = spec.build(p.buckets[bucket].cards);
+    const body = built.csv ?? built.text ?? '';
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', `${spec.type}; charset=utf-8`);
+    res.setHeader('Content-Disposition', `attachment; filename="${spec.name}-${stamp}.${spec.ext}"`);
+    // Rows the format could not carry (a TCGplayer listing without a product id)
+    // are reported rather than silently dropped.
+    if (built.skipped) res.setHeader('X-Skipped-Rows', String(built.skipped));
+    res.send(body);
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }

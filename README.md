@@ -16,12 +16,17 @@ Foil copies are marked by hand (a toggle at add time, or later from the
 collection); each finish is its own row with its own price. Collections work
 anonymously (guest cookie) and are kept when you sign up.
 
+Every copy also carries a **grade** (NM / LP / MP / HP / DMG), set when you add
+it and editable later. The collection page turns that into a **sell plan**: what
+each card nets if you list it yourself versus dropping it in one box, and the
+files to act on it (see [Sell plan](#sell-plan)).
+
 ## Pages
 
 | Page | What it does |
 | --- | --- |
 | `/` | Add cards: **camera** (hold cards one at a time), **image upload**, or **name search**. Camera mode used to be a separate page and now lives in the first section here. |
-| `/collection.html` | Gallery with filters, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count). |
+| `/collection.html` | Gallery with filters, a sell plan, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count, grade). |
 | `/login.html` | Sign in / create an account. A guest collection comes along with it. |
 
 ## Setup
@@ -43,13 +48,62 @@ npm start   # http://localhost:3000
 | Command | Purpose |
 | --- | --- |
 | `npm start` | Run the web app |
-| `npm test` | Unit tests (cue parser, storage contract, Scryfall wrapper) — no server or Python needed |
+| `npm test` | Unit tests (cue parser, storage contract, Scryfall wrapper, economics) — no server or Python needed |
 | `npm run smoke [-- image]` | API smoke test against a running server (uses the first image in `card scans/` by default) |
 | `npm run detect -- <image>` | Run detection on a single file from the CLI |
 | `npm run mass [-- --reset]` | Batch-add every image in `card scans/` and write `mass_upload_results.md` |
 | `npm run snapshot` | One-shot price snapshot (for cron/Task Scheduler) |
 | `npm run backup` | Hot backup of the database to `data/backups/` (keeps the newest 14) |
-| `npm run gc [-- --dry-run]` | Remove guest identities that never collected a card (`--all-guests`, `--empty-accounts` to widen it) |
+| `npm run gc [-- --dry-run]` | Remove guest identities that never collected a card (`--all-guests`, `--empty-accounts` to widen it); `--orphans` also drops cards no user owns, with their price history |
+
+## Sell plan
+
+The collection page answers a narrower question than "what is this worth":
+**what should I do with each card, and what does each route actually pay?**
+
+The retail benchmark is already stored — Scryfall's `usd` *is* the TCGplayer
+market price — so the comparison needs no credentials and no network. Each card
+is valued three ways:
+
+| Route | What it nets | Certainty |
+| --- | --- | --- |
+| List individually | market − grade haircut − undercut − commission − payment fee − postage | only if it sells |
+| One box to a buylist | market × grade × buylist rate | certain, one shipment |
+| Neither | below the wholesale floor — postage costs more than the card | — |
+
+Cards are bucketed (`list`, `box`, `ignore`), and the `list` bucket is cut at a
+capacity the user sets. Effort is per batch, not per card, so "list all 600" is
+never the answer: the cards with the biggest retail-over-wholesale gain get the
+envelopes, the rest go in the box.
+
+Every figure is an estimate and the page says so. Commission and per-order fees
+are published rates; postage, the undercut, the buylist rate and the five grade
+multipliers are assumptions — all editable under **Assumptions** and stored per
+user in the `setting` table.
+
+### The files it produces
+
+`GET /api/economics/export?format=…&bucket=…`
+
+| Format | Bucket | What it is |
+| --- | --- | --- |
+| `tcgplayer` | list | Seller-portal inventory CSV, keyed on the TCGplayer product id (stored from Scryfall; rows without one are skipped and counted in `X-Skipped-Rows`) |
+| `buylist` | box | Spreadsheet of what to send: quantity, set, number, grade, finish, expected payout |
+| `list` | box | Paste-a-list text (`4 Lightning Bolt [2XM] 129`) for a buylist's bulk tool |
+
+Deliberately **not** automated: no posting, no seller credentials. The app
+prepares the file and the user reviews it before uploading — an automatic upload
+with a stale price or a guessed grade is how a bad listing gets published at
+scale.
+
+### Grades
+
+`NM`, `LP`, `MP`, `HP`, `DMG` (TCGplayer's scale). A grade is part of a row's
+identity alongside the finish, so an NM and an LP copy of one printing are
+separate rows with their own value. Set it when adding a card (the picker next to
+the foil toggle) or change it later from the card's zoom view. Rows that predate
+the column are near mint, which is what their stored market price already
+describes.
 
 ## Set completion
 
@@ -79,9 +133,10 @@ See `src/auth.js` for session and rate-limit knobs, and
 ## Layout
 
 ```
-src/            express app, storage, auth, OCR pipeline, Scryfall client
+src/            express app, storage, auth, OCR pipeline, Scryfall client,
+                economics (what each route nets), grades, set completion
 public/         the three pages + shared.js (helpers) + camera.js (camera mode)
 scripts/        CLI: detect, mass upload, smoke, snapshot, backup, gc, OCR sidecar
-test/           node:test suites (matcher, db, scryfall)
+test/           node:test suites (matcher, db, scryfall, economics)
 card scans/     the sample corpus used by `npm run mass` and the smoke test
 ```

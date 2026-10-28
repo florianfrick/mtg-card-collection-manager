@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CONDITION_CODES, DEFAULT_CONDITION, normalizeCondition } from './condition.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.MTG_DB || join(here, '..', 'data', 'mtg.db');
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS card (
   collector_number  TEXT,
   rarity            TEXT,
   image_url         TEXT,
+  tcgplayer_id      INTEGER,                -- Scryfall's TCGplayer product id (what a listing file keys on)
   current_price_usd REAL,                   -- latest known market price (cache)
   price_updated_at  TEXT
 );
@@ -58,7 +60,8 @@ CREATE TABLE IF NOT EXISTS collection (
   added_at     TEXT NOT NULL,
   price_at_add REAL,                        -- what it was worth when added
   foil         INTEGER NOT NULL DEFAULT 0,  -- 1 = foil finish; foil and non-foil copies are separate rows
-  UNIQUE(user_id, card_id, foil)            -- one row per printing per finish per user
+  condition    TEXT NOT NULL DEFAULT 'NM',  -- NM/LP/MP/HP/DMG (src/condition.js); a grade is its own row
+  UNIQUE(user_id, card_id, foil, condition) -- one row per printing, finish and grade per user
 );
 CREATE TABLE IF NOT EXISTS price_snapshot (
   card_id        INTEGER NOT NULL REFERENCES card(id),
@@ -75,6 +78,14 @@ CREATE TABLE IF NOT EXISTS session (
   expires_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- Per-user knobs (the economics assumptions today). A key/value table rather
+-- than columns: adding a knob should not need a migration.
+CREATE TABLE IF NOT EXISTS setting (
+  user_id INTEGER NOT NULL REFERENCES user(id),
+  key     TEXT NOT NULL,
+  value   TEXT NOT NULL,
+  PRIMARY KEY (user_id, key)
+);
 CREATE INDEX IF NOT EXISTS idx_collection_user ON collection(user_id);
 CREATE INDEX IF NOT EXISTS idx_price_snapshot_day ON price_snapshot(day);
 CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
@@ -108,6 +119,9 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_username ON user(username CO
   const cardCols = new Set(db.prepare('PRAGMA table_info(card)').all().map((c) => c.name));
   if (!cardCols.has('current_price_foil_usd')) db.exec('ALTER TABLE card ADD COLUMN current_price_foil_usd REAL');
   if (!cardCols.has('price_foil_updated_at')) db.exec('ALTER TABLE card ADD COLUMN price_foil_updated_at TEXT');
+  // The TCGplayer product id rides along on every Scryfall card object; a
+  // listing file for their seller portal keys on it, so it is worth a column.
+  if (!cardCols.has('tcgplayer_id')) db.exec('ALTER TABLE card ADD COLUMN tcgplayer_id INTEGER');
   const snapCols = new Set(db.prepare('PRAGMA table_info(price_snapshot)').all().map((c) => c.name));
   if (!snapCols.has('price_usd_foil')) db.exec('ALTER TABLE price_snapshot ADD COLUMN price_usd_foil REAL');
   const cols = new Set(db.prepare('PRAGMA table_info(collection)').all().map((c) => c.name));
@@ -130,6 +144,41 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_user_username ON user(username CO
     `);
     // The index belonged to the old table and went with it.
     db.exec('CREATE INDEX IF NOT EXISTS idx_collection_user ON collection(user_id);');
+  }
+}
+
+// Condition support. Like `foil`, a grade is part of a row's identity — an NM
+// and an LP copy of the same printing are worth different money and are sold
+// separately — so the unique key widens once more and the table is rebuilt,
+// because SQLite cannot alter a constraint.
+//
+// Every existing row becomes 'NM'. That is not a guess: the price stored for it
+// is the near-mint market price, so the backfill adds a label without changing a
+// single number. The whole rebuild runs in one transaction, so a failure leaves
+// the old table untouched rather than half-copied.
+{
+  const cols = new Set(db.prepare('PRAGMA table_info(collection)').all().map((c) => c.name));
+  if (!cols.has('condition')) {
+    tx(() => {
+      db.exec(`
+        CREATE TABLE collection_v3 (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id      INTEGER NOT NULL REFERENCES user(id),
+          card_id      INTEGER NOT NULL REFERENCES card(id),
+          quantity     INTEGER NOT NULL DEFAULT 1,
+          added_at     TEXT NOT NULL,
+          price_at_add REAL,
+          foil         INTEGER NOT NULL DEFAULT 0,
+          condition    TEXT NOT NULL DEFAULT 'NM',
+          UNIQUE(user_id, card_id, foil, condition)
+        );
+        INSERT INTO collection_v3 (id, user_id, card_id, quantity, added_at, price_at_add, foil, condition)
+          SELECT id, user_id, card_id, quantity, added_at, price_at_add, foil, 'NM' FROM collection;
+        DROP TABLE collection;
+        ALTER TABLE collection_v3 RENAME TO collection;
+        CREATE INDEX IF NOT EXISTS idx_collection_user ON collection(user_id);
+      `);
+    });
   }
 }
 
@@ -156,15 +205,16 @@ const meta = {
 // an earlier, more complete answer stored. `name` is the exception — it is the
 // card's identity and every caller has it.
 const CARD_UPSERT = db.prepare(`
-  INSERT INTO card (scryfall_id, name, set_name, set_code, collector_number, rarity, image_url)
-  VALUES (?,?,?,?,?,?,?)
+  INSERT INTO card (scryfall_id, name, set_name, set_code, collector_number, rarity, image_url, tcgplayer_id)
+  VALUES (?,?,?,?,?,?,?,?)
   ON CONFLICT(scryfall_id) DO UPDATE SET
     name             = excluded.name,
     set_name         = COALESCE(excluded.set_name, card.set_name),
     set_code         = COALESCE(excluded.set_code, card.set_code),
     collector_number = COALESCE(excluded.collector_number, card.collector_number),
     rarity           = COALESCE(excluded.rarity, card.rarity),
-    image_url        = COALESCE(excluded.image_url, card.image_url)
+    image_url        = COALESCE(excluded.image_url, card.image_url),
+    tcgplayer_id     = COALESCE(excluded.tcgplayer_id, card.tcgplayer_id)
 `);
 
 /** Insert a printing or refresh its identity fields; returns the card row. */
@@ -177,7 +227,8 @@ function upsertCard(e) {
     e.set_code ?? null,
     num,
     e.rarity ?? null,
-    e.image_url ?? null
+    e.image_url ?? null,
+    Number.isFinite(Number(e.tcgplayer_id)) ? Number(e.tcgplayer_id) : null
   );
   return db.prepare('SELECT * FROM card WHERE scryfall_id = ?').get(e.scryfall_id);
 }
@@ -210,19 +261,23 @@ function recordPriceAt(cardId, priceUsd, day, priceUsdFoil = null) {
  * `rows` = [{ scryfall_id, price_usd, price_usd_foil, rarity? }]. Returns how
  * many cards were written.
  *
- * `rarity` rides along on the same Scryfall response for free, so a card stored
- * by an older build (or by a caller that did not know its rarity) is filled in
- * here rather than costing an extra request.
+ * `rarity` and `tcgplayer_id` ride along on the same Scryfall response for free,
+ * so a card stored by an older build (or by a caller that did not know them) is
+ * filled in here rather than costing an extra request. Both are only written
+ * when missing, so a later answer never blanks a known value.
  */
 export function recordPrices(rows) {
   const day = isoDay();
   const findCard = db.prepare('SELECT id FROM card WHERE scryfall_id = ?');
   const fillRarity = db.prepare('UPDATE card SET rarity = ? WHERE id = ? AND rarity IS NULL');
+  const fillTcg = db.prepare('UPDATE card SET tcgplayer_id = ? WHERE id = ? AND tcgplayer_id IS NULL');
   let written = 0;
   for (const r of rows) {
     const card = findCard.get(r.scryfall_id);
     if (!card) continue;
     if (r.rarity) fillRarity.run(r.rarity, card.id);
+    // Same response again: the TCGplayer id a listing file needs, for free.
+    if (Number.isFinite(Number(r.tcgplayer_id))) fillTcg.run(Number(r.tcgplayer_id), card.id);
     if (r.price_usd == null && r.price_usd_foil == null) continue; // nothing to record
     recordPriceAt(card.id, r.price_usd ?? null, day, r.price_usd_foil ?? null);
     written++;
@@ -293,6 +348,7 @@ const ENTRY_SELECT = `
     card.rarity               AS rarity,
     card.collector_number     AS collector_number,
     card.image_url            AS image_url,
+    card.tcgplayer_id         AS tcgplayer_id,
     CASE WHEN collection.foil = 1
          THEN COALESCE(card.current_price_foil_usd, collection.price_at_add)
          ELSE COALESCE(card.current_price_usd, collection.price_at_add) END AS price_usd,
@@ -301,39 +357,44 @@ const ENTRY_SELECT = `
     card.current_price_foil_usd AS current_price_foil_usd,
     collection.quantity       AS quantity,
     collection.foil           AS foil,
+    collection.condition      AS condition,
     collection.user_id        AS user_id,
     collection.added_at       AS added_at
   FROM collection
   JOIN card ON card.id = collection.card_id
 `;
 
-/** Add copies of a printing to a user's collection (upsert on user + printing + finish).
+/** Add copies of a printing to a user's collection (upsert on user + printing + finish + grade).
  *
- * One row per printing per finish per user; duplicates of the same finish live
- * in `quantity`, not extra rows. `copies` (default 1) is how many to add: a
- * fresh row starts there, an existing row increments by that many. `e.foil`
- * (truthy) stores the copy as foil — worth its own price, so it is a separate
- * row rather than a flag on the non-foil one.
+ * One row per printing per finish per grade per user; duplicates of the same
+ * kind live in `quantity`, not extra rows. `copies` (default 1) is how many to
+ * add: a fresh row starts there, an existing row increments by that many.
+ * `e.foil` (truthy) stores the copy as foil — worth its own price, so it is a
+ * separate row rather than a flag on the non-foil one. `e.condition` is the
+ * grade (src/condition.js): an LP copy is not the same asset as an NM one, so it
+ * gets its own row too. An unknown grade throws rather than quietly becoming NM.
  */
 export function addEntry(e, userId = DEFAULT_USER_ID, copies = 1) {
   if (!e.scryfall_id) throw new Error('scryfall_id is required');
   const n = Math.max(1, Math.floor(Number(copies) || 1));
   const foil = e.foil ? 1 : 0;
+  const condition = e.condition == null ? DEFAULT_CONDITION : normalizeCondition(e.condition);
+  if (!condition) throw new Error(`condition must be one of ${CONDITION_CODES.join(', ')}`);
   const card = upsertCard(e);
   // `changes`/`lastInsertRowid` cannot tell insert from upsert-update apart
   // (node:sqlite reports 1 row either way, and last_insert_rowid is left on
   // whatever inserted last), so look first.
   const existed = !!db
-    .prepare('SELECT 1 AS ok FROM collection WHERE user_id = ? AND card_id = ? AND foil = ?')
-    .get(userId, card.id, foil);
+    .prepare('SELECT 1 AS ok FROM collection WHERE user_id = ? AND card_id = ? AND foil = ? AND condition = ?')
+    .get(userId, card.id, foil, condition);
   const res = db
     .prepare(
-      `INSERT INTO collection (user_id, card_id, quantity, added_at, price_at_add, foil)
-       VALUES (?,?,?,?,?,?)
-       ON CONFLICT(user_id, card_id, foil) DO UPDATE SET quantity = quantity + excluded.quantity`
+      `INSERT INTO collection (user_id, card_id, quantity, added_at, price_at_add, foil, condition)
+       VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(user_id, card_id, foil, condition) DO UPDATE SET quantity = quantity + excluded.quantity`
     )
-    .run(userId, card.id, n, new Date().toISOString(), e.price_usd ?? null, foil);
-  const entry = getEntry(e.scryfall_id, userId, foil);
+    .run(userId, card.id, n, new Date().toISOString(), e.price_usd ?? null, foil, condition);
+  const entry = getEntry(e.scryfall_id, userId, foil, condition);
   // Seed today's point so a fresh card has a series without waiting for the
   // job. The price belongs to whichever finish was added.
   if (e.price_usd != null) {
@@ -352,21 +413,25 @@ export function addEntry(e, userId = DEFAULT_USER_ID, copies = 1) {
 }
 
 /**
- * Flip a collection row between foil and non-foil. When the user already owns
- * a row of the target finish, the two rows merge (quantities add, the earlier
- * `added_at` wins) instead of violating the one-row-per-finish rule. Returns
- * the surviving row, or null when the id is not this user's.
+ * Move a row onto a different finish and/or grade. When the user already owns a
+ * row of the target kind, the two merge (quantities add, the earlier `added_at`
+ * wins) instead of violating the one-row-per-kind rule. Returns the surviving
+ * row, or null when the id is not this user's.
+ *
+ * Both `foil` and `condition` are part of a row's identity, so "flip the finish"
+ * and "re-grade the card" are the same operation with a different target — and
+ * both have to handle the merge, which is why this lives in one place.
  */
-export function setEntryFoil(id, foil, userId = DEFAULT_USER_ID) {
+function moveEntryTo(id, { foil, condition }, userId) {
   const row = db
-    .prepare('SELECT id, card_id, quantity, added_at, foil FROM collection WHERE id = ? AND user_id = ?')
+    .prepare('SELECT id, card_id, quantity, added_at, foil, condition FROM collection WHERE id = ? AND user_id = ?')
     .get(Number(id), userId);
   if (!row) return null;
-  const target = foil ? 1 : 0;
-  if (row.foil === target) return fetchEntry(row.id, userId);
+  const target = { foil: foil ?? row.foil, condition: condition ?? row.condition };
+  if (target.foil === row.foil && target.condition === row.condition) return fetchEntry(row.id, userId);
   const other = db
-    .prepare('SELECT id, quantity, added_at FROM collection WHERE user_id = ? AND card_id = ? AND foil = ?')
-    .get(userId, row.card_id, target);
+    .prepare('SELECT id, quantity, added_at FROM collection WHERE user_id = ? AND card_id = ? AND foil = ? AND condition = ?')
+    .get(userId, row.card_id, target.foil, target.condition);
   return tx(() => {
     if (other) {
       db.prepare(
@@ -375,17 +440,34 @@ export function setEntryFoil(id, foil, userId = DEFAULT_USER_ID) {
       db.prepare('DELETE FROM collection WHERE id = ?').run(row.id);
       return fetchEntry(other.id, userId);
     }
-    db.prepare('UPDATE collection SET foil = ? WHERE id = ? AND user_id = ?').run(target, row.id, userId);
+    db.prepare('UPDATE collection SET foil = ?, condition = ? WHERE id = ? AND user_id = ?')
+      .run(target.foil, target.condition, row.id, userId);
     return fetchEntry(row.id, userId);
   });
 }
 
-/** The stored collection row (flattened) for a printing id + finish, or null. */
-function getEntry(scryfallId, userId = DEFAULT_USER_ID, foil = 0) {
+/** Flip a row between foil and non-foil (merging into an owned row of that finish). */
+export function setEntryFoil(id, foil, userId = DEFAULT_USER_ID) {
+  return moveEntryTo(id, { foil: foil ? 1 : 0 }, userId);
+}
+
+/**
+ * Re-grade a row (NM -> LP etc.), merging into an owned row of that grade.
+ * The market price does not move: the grade is a multiplier applied by the
+ * economics layer, so this changes what the copy is *worth*, not what it is.
+ */
+export function setEntryCondition(id, condition, userId = DEFAULT_USER_ID) {
+  const code = normalizeCondition(condition);
+  if (!code) throw new Error(`condition must be one of ${CONDITION_CODES.join(', ')}`);
+  return moveEntryTo(id, { condition: code }, userId);
+}
+
+/** The stored collection row (flattened) for a printing id + finish + grade, or null. */
+function getEntry(scryfallId, userId = DEFAULT_USER_ID, foil = 0, condition = DEFAULT_CONDITION) {
   return (
     db
-      .prepare(ENTRY_SELECT + ' WHERE collection.user_id = ? AND card.scryfall_id = ? AND collection.foil = ?')
-      .get(userId, scryfallId, foil) ?? null
+      .prepare(ENTRY_SELECT + ' WHERE collection.user_id = ? AND card.scryfall_id = ? AND collection.foil = ? AND collection.condition = ?')
+      .get(userId, scryfallId, foil, condition) ?? null
   );
 }
 
@@ -508,6 +590,29 @@ export function setEntryQuantity(id, qty, userId = DEFAULT_USER_ID) {
   db.prepare('UPDATE collection SET quantity = ? WHERE id = ? AND user_id = ?')
     .run(q, Number(id), userId);
   return fetchEntry(id, userId);
+}
+
+// ---- Per-user settings -----------------------------------------------------
+
+/** A stored JSON setting, or `fallback` when it was never written. */
+export function getSetting(userId, key, fallback = null) {
+  const row = db
+    .prepare('SELECT value FROM setting WHERE user_id = ? AND key = ?')
+    .get(Number(userId), String(key));
+  if (!row) return fallback;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return fallback; // a corrupt blob is a missing one, never a crash
+  }
+}
+
+export function setSetting(userId, key, value) {
+  db.prepare(
+    `INSERT INTO setting (user_id, key, value) VALUES (?,?,?)
+     ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`
+  ).run(Number(userId), String(key), JSON.stringify(value));
+  return value;
 }
 
 // ---- Users, sessions & guest identities ------------------------------------
@@ -656,6 +761,7 @@ function deleteUserRows(userId) {
   const id = Number(userId);
   const entries = db.prepare('DELETE FROM collection WHERE user_id = ?').run(id).changes;
   const sessions = db.prepare('DELETE FROM session WHERE user_id = ?').run(id).changes;
+  db.prepare('DELETE FROM setting WHERE user_id = ?').run(id);
   db.prepare('DELETE FROM user WHERE id = ?').run(id);
   return { entries, sessions };
 }
@@ -667,10 +773,10 @@ export function deleteUser(userId) {
 
 /**
  * Fold a guest's collection into an account, then drop the guest. A printing
- * the account already owns *in the same finish* adds the copies together and
- * keeps the earlier `added_at` — "owned since the first time either side added
- * it". Foil and non-foil rows fold independently. Price history needs no work
- * at all: `price_snapshot` is keyed by card, not by user.
+ * the account already owns *in the same finish and grade* adds the copies
+ * together and keeps the earlier `added_at` — "owned since the first time either
+ * side added it". Foil and non-foil, NM and LP, all fold independently. Price
+ * history needs no work at all: `price_snapshot` is keyed by card, not by user.
  */
 export function mergeGuestInto(targetUserId, guestUserId) {
   const target = Number(targetUserId);
@@ -678,18 +784,18 @@ export function mergeGuestInto(targetUserId, guestUserId) {
   if (target === guest) return { rows: 0, copies: 0 };
   const size = collectionSize(guest);
   const upsert = db.prepare(
-    `INSERT INTO collection (user_id, card_id, quantity, added_at, price_at_add, foil)
-     VALUES (?,?,?,?,?,?)
-     ON CONFLICT(user_id, card_id, foil) DO UPDATE SET
+    `INSERT INTO collection (user_id, card_id, quantity, added_at, price_at_add, foil, condition)
+     VALUES (?,?,?,?,?,?,?)
+     ON CONFLICT(user_id, card_id, foil, condition) DO UPDATE SET
        quantity = collection.quantity + excluded.quantity,
        added_at = MIN(collection.added_at, excluded.added_at)`
   );
   tx(() => {
     const rows = db
-      .prepare('SELECT card_id, quantity, added_at, price_at_add, foil FROM collection WHERE user_id = ?')
+      .prepare('SELECT card_id, quantity, added_at, price_at_add, foil, condition FROM collection WHERE user_id = ?')
       .all(guest);
     for (const row of rows) {
-      upsert.run(target, row.card_id, row.quantity, row.added_at, row.price_at_add, row.foil);
+      upsert.run(target, row.card_id, row.quantity, row.added_at, row.price_at_add, row.foil, row.condition);
     }
     deleteUserRows(guest);
   });
@@ -747,6 +853,34 @@ export function deleteGuests({ includeWithCards = false } = {}) {
     }
   });
   return { removed, kept: guestInventory().length };
+}
+
+// Cards nobody owns any more. Removing a collection row deliberately leaves the
+// card behind so its price history survives an accidental delete, but a card
+// that no user owns will never be shown again — it only makes `card` (and the
+// lookups over it) grow. Sweeping is opt-in for that reason.
+export function orphanCards() {
+  return db
+    .prepare(
+      `SELECT c.id, c.scryfall_id, c.name, c.set_code, c.collector_number
+         FROM card c
+        WHERE NOT EXISTS (SELECT 1 FROM collection col WHERE col.card_id = c.id)
+        ORDER BY c.name`
+    )
+    .all();
+}
+
+export function deleteOrphanCards() {
+  const doomed = orphanCards();
+  if (!doomed.length) return { removed: 0, snapshots: 0 };
+  const ids = doomed.map((c) => c.id);
+  const marks = ids.map(() => '?').join(',');
+  let snapshots = 0;
+  tx(() => {
+    snapshots = db.prepare(`DELETE FROM price_snapshot WHERE card_id IN (${marks})`).run(...ids).changes;
+    db.prepare(`DELETE FROM card WHERE id IN (${marks})`).run(...ids);
+  });
+  return { removed: doomed.length, snapshots };
 }
 
 // ---- One-time fold of the pre-normalization table --------------------------

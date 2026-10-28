@@ -4,6 +4,7 @@
 //   node scripts/gc.mjs                 # guests that never collected a card
 //   node scripts/gc.mjs --all-guests    # every guest identity (accounts are kept)
 //   node scripts/gc.mjs --empty-accounts # accounts with an empty collection too
+//   node scripts/gc.mjs --orphans       # cards no user owns (drops their history)
 //   node scripts/gc.mjs --dry-run       # only report, change nothing
 //
 // Importing src/db.js also runs the schema migrations, which is what drops the
@@ -16,6 +17,7 @@ const root = join(here, '..');
 
 const allGuests = process.argv.includes('--all-guests');
 const emptyAccounts = process.argv.includes('--empty-accounts');
+const sweepOrphans = process.argv.includes('--orphans');
 const dryRun = process.argv.includes('--dry-run');
 
 const db = await import('../src/db.js');
@@ -55,6 +57,24 @@ if (staleAccounts.length) {
   }
 } else if (emptyAccounts) {
   console.log('no empty account to remove.');
+}
+
+// Removing a collection row keeps the card so its price history survives an
+// accidental delete — which means the `card` table grows forever. A card no
+// user owns can never be shown again, so sweeping it is safe; it is opt-in
+// because the sweep also drops that card's price history.
+const orphans = db.orphanCards();
+if (!orphans.length) {
+  console.log('no orphan card.');
+} else if (!sweepOrphans) {
+  console.log(`${orphans.length} card(s) nobody owns — run with --orphans to drop them.`);
+} else if (dryRun) {
+  console.log(`would remove ${orphans.length} orphan card(s) (dry run):`);
+  for (const c of orphans.slice(0, 20)) console.log(`  - ${c.name} · ${c.set_code} ${c.collector_number}`);
+  if (orphans.length > 20) console.log(`  … and ${orphans.length - 20} more`);
+} else {
+  const { removed, snapshots } = db.deleteOrphanCards();
+  console.log(`removed ${removed} orphan card(s) · ${snapshots} price snapshot(s)`);
 }
 
 const keptAccounts = db.listUsers().filter((u) => Number(u.is_guest) !== 1);

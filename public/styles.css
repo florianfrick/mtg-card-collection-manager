@@ -851,3 +851,184 @@ main.auth p { margin: 0.7em 0 0; }
   .setrow { grid-template-columns: auto minmax(0, 1fr) auto auto; }
   .setrow .setbar { display: none; } /* the numbers already say it on a phone */
 }
+/* ---- Sell plan (collection page) ---------------------------------------- */
+/* The numbers are estimates, so the design keeps them quiet and factual:
+   no gradients, no celebratory colour on money — just figures, then the
+   sentences that explain them. */
+#econ-wrap h3 .meta {
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+.insights { margin: 0 0 14px; }
+.insight {
+  margin: 0 0 6px;
+  padding: 7px 12px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.insight.good { border-left-color: var(--green); background: var(--green-bg); color: #145034; }
+.insight.warn { border-left-color: var(--amber); background: var(--amber-bg); color: #6b3d05; }
+.insight.muted { border-left-color: var(--line-strong); color: var(--muted); }
+
+.buckets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.bucket {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.bucket.list { border-color: rgba(31, 122, 77, 0.28); background: var(--green-bg); }
+.bucket.skip { background: #f7f3ee; }
+.bucket-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.bucket-net { font-size: 1.42rem; font-weight: 760; letter-spacing: -0.02em; }
+.bucket.list .bucket-net { color: var(--green); }
+.bucket.skip .bucket-net { color: var(--muted); }
+.bucket-meta { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+.bucket-dl { margin-top: 9px; font-size: 0.82rem; padding: 0.42em 0.85em; }
+.bucket-dl.ghost {
+  margin-top: 6px;
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+@media (max-width: 720px) {
+  .buckets { grid-template-columns: 1fr; }
+}
+
+.econ-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+.econ-table th {
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  text-align: left;
+  border-bottom: 1px solid var(--line-strong);
+}
+.econ-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.econ-table tr:last-child td { border-bottom: none; }
+.econ-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.econ-table .strong { font-weight: 700; color: var(--green); }
+.econ-name { display: block; font-weight: 600; }
+.econ-sub { display: block; font-size: 0.76rem; color: var(--muted); }
+button.more {
+  padding: 0.3em 0.8em;
+  font-size: 0.78rem;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+#econ-assumptions { margin-top: 14px; }
+.econ-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+.econ-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.econ-form input,
+.econ-form select {
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--ink);
+  padding: 0.35em 0.5em;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+.econ-form input:focus,
+.econ-form select:focus { outline: none; border-color: var(--accent-ring); box-shadow: 0 0 0 3px var(--accent-ring); }
+.econ-grades {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--line-strong);
+}
+.econ-grades label { flex: 0 0 auto; }
+.econ-grades input { width: 74px; }
+#econ-note { grid-column: 1 / -1; margin: 2px 0 0; }
+
+/* Grade pill: the lightbox table and the sell plan list. */
+.cond-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0.05em 0.45em;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--amber);
+  background: var(--amber-bg);
+  border: 1px solid rgba(161, 92, 7, 0.25);
+  border-radius: 999px;
+}
+.cond-tag.foil {
+  color: #7a5a08;
+  background: linear-gradient(180deg, #fdf3cf, #f8e5ab);
+  border-color: rgba(161, 92, 7, 0.3);
+}
+#lightbox .cond-ctl { display: flex; align-items: center; gap: 0.5em; font-size: 0.86rem; color: var(--ink-soft); }
+#lightbox .condsel {
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 0.25em 0.5em;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+/* The manual grade picker next to each "add as foil" toggle (index page). */
+.cond-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-left: 0.6em;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.cond-pick select {
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 0.18em 0.4em;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}

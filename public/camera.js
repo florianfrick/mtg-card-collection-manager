@@ -32,6 +32,7 @@ export function createCamera({ onChange = () => {} } = {}) {
     stop: $('#cam-stop'),
     pace: $('#cam-pace'),
     foil: $('#camfoil'),
+    condition: $('#camcondition'),
     video: $('#video'),
     crop: $('#crop'),
     cues: $('#cues'),
@@ -136,7 +137,15 @@ export function createCamera({ onChange = () => {} } = {}) {
       // already acted on, so an unchanged frame resolves (and adds) nothing.
       // foil: the manual toggle — every card scanned while it is on lands as
       // foil (its own row, foil price). Nothing detects foil automatically.
-      body: JSON.stringify({ image, autoAdd: true, ignoreCues: handledKey, foil: el.foil.checked }),
+      body: JSON.stringify({
+        image,
+        autoAdd: true,
+        ignoreCues: handledKey,
+        foil: el.foil.checked,
+        // The grade every card scanned while this is set lands as. Nothing
+        // detects condition any more than it detects foil.
+        condition: el.condition?.value ?? 'NM',
+      }),
     });
     showFrame(r);
     handleResult(r);

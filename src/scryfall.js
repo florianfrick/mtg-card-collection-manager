@@ -225,6 +225,9 @@ export function toPrinting(card) {
     collector_number: card.collector_number,
     rarity: card.rarity,
     image_url: imgs?.large ?? imgs?.normal ?? null,
+    // TCGplayer's product id for this printing. A seller's bulk listing file
+    // keys on it, so it is the one identifier worth keeping besides Scryfall's.
+    tcgplayer_id: Number.isFinite(Number(card.tcgplayer_id)) ? Number(card.tcgplayer_id) : null,
     prices: {
       usd: numOrNull(card.prices?.usd),
       eur: numOrNull(card.prices?.eur),
@@ -236,11 +239,11 @@ export function toPrinting(card) {
 
 /**
  * Current USD prices for a batch of Scryfall printing ids — one entry per id:
- * `{ usd, usd_foil, rarity }`, each price null when Scryfall has no price for
- * that finish. Uses POST /cards/collection (up to 75 identifiers per request),
- * so a whole collection costs a handful of requests instead of one per card —
- * this is what keeps the daily price snapshot cheap. Missing ids simply do not
- * appear in the returned Map.
+ * `{ usd, usd_foil, rarity, tcgplayer_id }`, each price null when Scryfall has
+ * no price for that finish. Uses POST /cards/collection (up to 75 identifiers
+ * per request), so a whole collection costs a handful of requests instead of one
+ * per card — this is what keeps the daily price snapshot cheap. Missing ids
+ * simply do not appear in the returned Map.
  */
 export async function pricesForIds(ids) {
   const out = new Map();
@@ -258,6 +261,8 @@ export async function pricesForIds(ids) {
           usd: numOrNull(c.prices?.usd),
           usd_foil: numOrNull(c.prices?.usd_foil),
           rarity: c.rarity ?? null,
+          // Same payload: the id the TCGplayer export needs, at no extra cost.
+          tcgplayer_id: Number.isFinite(Number(c.tcgplayer_id)) ? Number(c.tcgplayer_id) : null,
         });
       }
     }
