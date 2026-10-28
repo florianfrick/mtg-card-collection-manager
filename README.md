@@ -13,8 +13,8 @@ via OCR and added to your SQLite collection with its current price.
 4. Prices (USD/EUR) come from Scryfall, with a daily snapshot for history.
 
 Foil copies are marked by hand (a toggle at add time, or later from the
-collection); each finish is its own row with its own price. Collections work
-anonymously (guest cookie) and are kept when you sign up.
+collection); each finish is its own row with its own price. There are no
+accounts: the app serves one collection, the one in its database.
 
 Every copy also carries a **grade** (NM / LP / MP / HP / DMG), set when you add
 it and editable later. The collection page turns that into a **sell plan**: what
@@ -27,7 +27,6 @@ files to act on it (see [Sell plan](#sell-plan)).
 | --- | --- |
 | `/` | Add cards: **camera** (hold cards one at a time), **image upload**, or **name search**. Camera mode used to be a separate page and now lives in the first section here. |
 | `/collection.html` | Gallery with filters, a sell plan, set completion, collection value over time, and a zoom view per card (price trend, copy count, foil count, grade). |
-| `/login.html` | Sign in / create an account. A guest collection comes along with it. |
 
 ## Setup
 
@@ -43,6 +42,13 @@ tools\ppocr\venv\Scripts\python.exe -m pip install rapidocr onnxruntime
 npm start   # http://localhost:3000
 ```
 
+**Upgrading from a version with accounts.** Older databases carry a `user_id` on
+`collection` and `setting`, plus `user` and `session` tables. The first boot
+folds every account's rows into the one collection (quantities add, the earlier
+`added_at` wins) and drops those tables. Take a backup first — `npm run backup`
+— because the columns are gone afterwards: going back to an older build needs
+that backup, not just an older checkout.
+
 ## Docker
 
 The same two runtimes in one image: Node for the app, Python for the OCR
@@ -55,8 +61,8 @@ docker compose logs -f app
 ```
 
 The database lives in the `mtg-data` volume at `/data/mtg.db`, so rebuilding the
-image never touches the collection. Port and identity flags come from `.env`
-(copy `.env.example`).
+image never touches the collection. The published port comes from `.env` (copy
+`.env.example`).
 
 **Bringing an existing collection across.** The container starts with an empty
 database; copy yours in, then fix ownership (the app runs as uid 1000, and a
@@ -77,10 +83,9 @@ Notes that matter in a container:
 
 - `PPOCR_PYTHON=/opt/ppocr/venv/bin/python` is set in the image; the code's
   default path is the Windows layout (`tools/ppocr/venv/Scripts/python.exe`).
-- `GET /healthz` is the probe. It sits outside `/api` on purpose: a probe sends
-  no cookie, and the identity middleware would otherwise mint a guest on every
-  check. It answers `{"ok":true,"ocr":false}` when the OCR engine is missing —
-  the collection still works, only scanning does not.
+- `GET /healthz` is the probe: one cheap read of the collection, no writes. It
+  answers `{"ok":true,"ocr":false}` when the OCR engine is missing — the
+  collection still works, only scanning does not.
 - `SIGTERM` closes the HTTP server, the database and the OCR child, so
   `docker stop` is clean. Give it the 15s in `stop_grace_period`.
 - Behind a reverse proxy, forward the original `Host` header (`proxy_set_header
@@ -101,7 +106,7 @@ Notes that matter in a container:
 | `npm run mass [-- --reset]` | Batch-add every image in `card scans/` and write `mass_upload_results.md` |
 | `npm run snapshot` | One-shot price snapshot (for cron/Task Scheduler) |
 | `npm run backup` | Hot backup of the database to `data/backups/` (keeps the newest 14) |
-| `npm run gc [-- --dry-run]` | Remove guest identities that never collected a card (`--all-guests`, `--empty-accounts` to widen it); `--orphans` also drops cards no user owns, with their price history |
+| `npm run gc [-- --dry-run]` | Report cards nobody owns; `--orphans` drops them and their price history |
 
 ## Sell plan
 
@@ -126,7 +131,7 @@ envelopes, the rest go in the box.
 Every figure is an estimate and the page says so. Commission and per-order fees
 are published rates; postage, the undercut, the buylist rate and the five grade
 multipliers are assumptions — all editable under **Assumptions** and stored per
-user in the `setting` table.
+in the `setting` table.
 
 ### The files it produces
 
@@ -171,18 +176,16 @@ Scryfall data still report their owned count, just without a total.
 | `PPOCR_TIMEOUT` | `180000` | Sidecar response timeout (ms) |
 | `PPOCR_DEBUG` | off | Forward the sidecar's stderr (model logs) to the console |
 | `MTG_SETS_RETRY_MS` | `300000` | How long to wait before retrying a failed Scryfall set list |
-| `MTG_ALLOW_GUESTS` / `MTG_ALLOW_SIGNUP` | on | Guest browsing / sign-ups |
 | `MTG_BACKUP_DIR` | `data/backups` | Where `npm run backup` writes |
 
-See `src/auth.js` for session and rate-limit knobs, and
-`tools/ppocr/setup.md` for OCR sidecar details.
+See `tools/ppocr/setup.md` for OCR sidecar details.
 
 ## Layout
 
 ```
-src/            express app, storage, auth, OCR pipeline, Scryfall client,
+src/            express app, storage, OCR pipeline, Scryfall client,
                 economics (what each route nets), grades, set completion
-public/         the three pages + shared.js (helpers) + camera.js (camera mode)
+public/         the two pages + shared.js (helpers) + camera.js (camera mode)
 scripts/        CLI: detect, mass upload, smoke, snapshot, backup, gc, OCR sidecar
 test/           node:test suites (matcher, db, scryfall, economics)
 card scans/     the sample corpus used by `npm run mass` and the smoke test

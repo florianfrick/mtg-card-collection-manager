@@ -19,6 +19,10 @@ process.env.MTG_DB = join(dir, 'test.db');
 const econ = await import('../src/economics.js');
 const db = await import('../src/db.js');
 
+// One settings row exists now (no per-user rows), so each test starts from the
+// defaults rather than inheriting the previous test's assumptions.
+test.beforeEach(() => db.clearSettings());
+
 test.after(() => {
   db.closeDatabase();
   rmSync(dir, { recursive: true, force: true });
@@ -138,32 +142,28 @@ test('an unknown platform is refused', () => {
 });
 
 test('switching platform swaps the fee preset', () => {
-  const u = db.createUser({ name: 'econ', username: 'econ', passwordHash: 'h', passwordSalt: 's', passwordIters: 1 });
-  const saved = econ.saveSettings(u.id, { platform: 'ebay' });
+  const saved = econ.saveSettings({ platform: 'ebay' });
   assert.equal(saved.commissionPct, econ.PLATFORMS.ebay.commissionPct);
   assert.equal(saved.paymentPct, 0, 'eBay bundles payment processing into its final value fee');
 });
 
 test('a custom fee survives a later unrelated change', () => {
-  const u = db.createUser({ name: 'econ2', username: 'econ2', passwordHash: 'h', passwordSalt: 's', passwordIters: 1 });
-  econ.saveSettings(u.id, { commissionPct: 7 });
-  const after = econ.saveSettings(u.id, { postage: 2.5 });
+  econ.saveSettings({ commissionPct: 7 });
+  const after = econ.saveSettings({ postage: 2.5 });
   assert.equal(after.commissionPct, 7, 'editing postage must not reset the commission');
   assert.equal(after.postage, 2.5);
 });
 
 test('settings round-trip through storage', () => {
-  const u = db.createUser({ name: 'econ3', username: 'econ3', passwordHash: 'h', passwordSalt: 's', passwordIters: 1 });
-  econ.saveSettings(u.id, { capacity: 7, conditionFactors: { LP: 0.9 } });
-  const loaded = econ.loadSettings(u.id);
+  econ.saveSettings({ capacity: 7, conditionFactors: { LP: 0.9 } });
+  const loaded = econ.loadSettings();
   assert.equal(loaded.capacity, 7);
   assert.equal(loaded.conditionFactors.LP, 0.9);
   assert.equal(loaded.conditionFactors.NM, 1, 'grades that were not overridden keep their default');
 });
 
-test('a user who never saved anything gets the defaults', () => {
-  const u = db.createUser({ name: 'econ4', username: 'econ4', passwordHash: 'h', passwordSalt: 's', passwordIters: 1 });
-  assert.deepEqual(econ.loadSettings(u.id), econ.DEFAULT_SETTINGS);
+test('nothing saved yet means the defaults', () => {
+  assert.deepEqual(econ.loadSettings(), econ.DEFAULT_SETTINGS);
 });
 
 // ---- export files ----------------------------------------------------------

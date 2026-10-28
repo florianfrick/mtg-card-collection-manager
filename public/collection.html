@@ -86,7 +86,7 @@
   <div id="lightbox" hidden></div>
 
   <script type="module">
-    import { $, escapeHtml, bootIdentity } from '/shared.js';
+    import { $, escapeHtml } from '/shared.js';
 
     // price is a REAL column or null; guard null before Number() (which gives 0).
     const usd = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
@@ -95,12 +95,6 @@
     let all = []; // every collection entry, straight from the API
 
     async function load() {
-      // Identity first: an anonymous visitor is minted a throwaway guest
-      // collection here (Set-Cookie on the 200), so the cards they add below
-      // are already theirs. The landing page says `?merged=N` out loud once a
-      // guest signs in and N rows come across — see mergedNote() below.
-      const me = await bootIdentity();
-      if (!me) return; // signed out between calls: bootIdentity() already redirected
       const res = await fetch('/api/collection');
       if (!res.ok) throw new Error('the server returned ' + res.status);
       all = await res.json();
@@ -109,26 +103,6 @@
       renderPortfolio();
       renderSets().catch((e) => console.error(e));
       loadEcon();
-      mergedNote();
-    }
-
-    /**
-     * After a login that folded a guest collection in, the landing page says
-     * `?merged=N` (rows, the same number the badge count went up by). The value
-     * is read here, the parameter stripped, and the message woven into the
-     * stat line so it reads as one sentence, not a banner.
-     */
-    function mergedNote() {
-      let n = 0;
-      try {
-        const url = new URL(location.href);
-        n = Math.max(0, Math.floor(Number(url.searchParams.get('merged')) || 0));
-        if (n > 0) {
-          url.searchParams.delete('merged');
-          history.replaceState(null, '', url.pathname + url.search + url.hash);
-        }
-      } catch { return; }
-      if (n > 0) $('#stat').textContent = `Merged ${n} guest ${n === 1 ? 'card' : 'cards'} into your collection · ` + $('#stat').textContent;
     }
 
     /** Total-value chart from /api/prices/portfolio (today matters too). */

@@ -1,68 +1,32 @@
 // Housekeeping for the local database — the things that accumulate on their own
 // while the app runs.
 //
-//   node scripts/gc.mjs                 # guests that never collected a card
-//   node scripts/gc.mjs --all-guests    # every guest identity (accounts are kept)
-//   node scripts/gc.mjs --empty-accounts # accounts with an empty collection too
-//   node scripts/gc.mjs --orphans       # cards no user owns (drops their history)
+//   node scripts/gc.mjs                 # report what an orphan sweep would drop
+//   node scripts/gc.mjs --orphans       # drop cards nobody owns (and their history)
 //   node scripts/gc.mjs --dry-run       # only report, change nothing
 //
-// Importing src/db.js also runs the schema migrations, which is what drops the
-// dead `collection_entry` table of a pre-normalization database.
+// Importing src/db.js also runs the schema migrations, which is what folds away
+// the user_id columns of a pre-accounts database.
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
-const allGuests = process.argv.includes('--all-guests');
-const emptyAccounts = process.argv.includes('--empty-accounts');
 const sweepOrphans = process.argv.includes('--orphans');
 const dryRun = process.argv.includes('--dry-run');
 
 const db = await import('../src/db.js');
 const dbPath = process.env.MTG_DB || join(root, 'data', 'mtg.db');
 
-const before = db.guestInventory();
-const users = db.listUsers();
-const accounts = users.filter((u) => Number(u.is_guest) !== 1);
-
+const size = db.collectionSize();
 console.log(`database: ${relative(root, dbPath) || dbPath}`);
-console.log(`users: ${users.length} (${accounts.length} accounts, ${before.length} guests)`);
-if (before.length) {
-  const withCards = before.filter((g) => g.rows > 0);
-  console.log(`guests holding cards: ${withCards.length}${withCards.length ? ' — ' + withCards.map((g) => `${g.name} (${g.copies} copies)`).join(', ') : ''}`);
-}
-
-const doomed = before.filter((g) => allGuests || g.rows === 0);
-if (!doomed.length) {
-  console.log('no guest to remove.');
-} else if (dryRun) {
-  console.log(`would remove ${doomed.length} guest ${doomed.length === 1 ? 'identity' : 'identities'} (dry run):`);
-  for (const g of doomed) console.log(`  - ${g.name} · ${g.rows} rows · created ${g.created_at}`);
-} else {
-  const { removed, kept } = db.deleteGuests({ includeWithCards: allGuests });
-  console.log(`removed ${removed} guest ${removed === 1 ? 'identity' : 'identities'} · ${kept} left`);
-}
-
-// Accounts are only ever touched on request, and only when they hold nothing:
-// an empty account is either a test sign-up or one someone gave up on.
-const staleAccounts = emptyAccounts ? accounts.filter((a) => db.collectionSize(a.id).rows === 0) : [];
-if (staleAccounts.length) {
-  if (dryRun) {
-    console.log(`would remove ${staleAccounts.length} empty account(s) (dry run): ${staleAccounts.map((a) => a.username || a.name).join(', ')}`);
-  } else {
-    for (const a of staleAccounts) db.deleteUser(a.id);
-    console.log(`removed ${staleAccounts.length} empty account(s): ${staleAccounts.map((a) => a.username || a.name).join(', ')}`);
-  }
-} else if (emptyAccounts) {
-  console.log('no empty account to remove.');
-}
+console.log(`collection: ${size.rows} rows, ${size.copies} copies`);
 
 // Removing a collection row keeps the card so its price history survives an
-// accidental delete — which means the `card` table grows forever. A card no
-// user owns can never be shown again, so sweeping it is safe; it is opt-in
-// because the sweep also drops that card's price history.
+// accidental delete — which means the `card` table grows forever. A card nobody
+// owns can never be shown again, so sweeping it is safe; it is opt-in because
+// the sweep also drops that card's price history.
 const orphans = db.orphanCards();
 if (!orphans.length) {
   console.log('no orphan card.');
@@ -76,9 +40,3 @@ if (!orphans.length) {
   const { removed, snapshots } = db.deleteOrphanCards();
   console.log(`removed ${removed} orphan card(s) · ${snapshots} price snapshot(s)`);
 }
-
-const keptAccounts = db.listUsers().filter((u) => Number(u.is_guest) !== 1);
-console.log(
-  'collection rows: ' +
-    (keptAccounts.map((a) => `${a.username || a.name}: ${db.collectionSize(a.id).rows}`).join(', ') || 'none')
-);

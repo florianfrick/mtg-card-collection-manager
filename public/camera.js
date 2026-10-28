@@ -503,8 +503,8 @@ export function createCamera({ onChange = () => {} } = {}) {
         ? await api('/api/collection/' + item.id, { method: 'PATCH', body: JSON.stringify({ copies: 1 }) })
         : await api('/api/collection/' + item.id + '/decrement', { method: 'POST', body: JSON.stringify({ n: 1 }) });
       // Both endpoints answer { entry } — null when the row was deleted (−1 on
-      // the last copy). A 404 means the row belongs to a different identity now
-      // (e.g. this browser signed in elsewhere): forget it.
+      // the last copy). A 404 means the row is already gone (removed in another
+      // tab): forget it.
       if (!res?.entry) {
         item.removed = true;
         render();
@@ -517,8 +517,8 @@ export function createCamera({ onChange = () => {} } = {}) {
       onChange();
       setStatus(`${label(item.card)}: ${item.copies === 1 ? '1 copy' : `${item.copies} copies`} in collection.`);
     } catch (e) {
-      // A 404 here means the row belongs to a different identity now (e.g. this
-      // browser signed in elsewhere): forget the item, do not retry it.
+      // A 404 here means the row is already gone (removed in another tab):
+      // forget the item, do not retry it.
       if (String(e.message).includes('404')) { item.removed = true; render(); onChange(); }
       setStatus('⚠️ Update failed: ' + e.message, 'warn');
     }

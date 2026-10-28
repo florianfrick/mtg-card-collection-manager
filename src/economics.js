@@ -114,9 +114,9 @@ export function resolveSettings(raw = {}) {
   };
 }
 
-/** The caller's settings, or the defaults when they have never saved any. */
-export function loadSettings(userId) {
-  const stored = getSetting(userId, SETTING_KEY, null);
+/** The saved assumptions, or the defaults when none have been stored yet. */
+export function loadSettings() {
+  const stored = getSetting(SETTING_KEY, null);
   try {
     return resolveSettings(stored ?? {});
   } catch {
@@ -131,8 +131,8 @@ export function loadSettings(userId) {
  * fee preset unless the patch sets the fees explicitly — otherwise "eBay" would
  * keep TCGplayer's commission and quietly overstate every eBay net.
  */
-export function saveSettings(userId, patch = {}) {
-  const current = loadSettings(userId);
+export function saveSettings(patch = {}) {
+  const current = loadSettings();
   const next = { ...current, ...patch };
   const switchesPlatform = patch.platform && patch.platform !== current.platform;
   const setsFees = ['commissionPct', 'paymentPct', 'perOrderFee'].some((k) => patch[k] !== undefined);
@@ -145,7 +145,7 @@ export function saveSettings(userId, patch = {}) {
     }
   }
   const resolved = resolveSettings(next);
-  setSetting(userId, SETTING_KEY, resolved);
+  setSetting(SETTING_KEY, resolved);
   return resolved;
 }
 

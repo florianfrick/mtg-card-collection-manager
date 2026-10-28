@@ -7,14 +7,9 @@ import { namedFuzzy, printingsOf } from './scryfall.js';
 import {
   addEntry, listEntries, removeEntry, decrementEntry, incrementEntry, setEntryQuantity, setEntryFoil, setEntryCondition,
   priceHistory, portfolioHistory,
-  closeDatabase, collectionSize, countUsers, createUser, deleteUserSessions, findUserByUsername, mergeGuestInto, ownsEntry,
-  publicUser, purgeExpiredSessions, purgeGuests, setUserCredentials, setUserPassword,
+  closeDatabase, collectionSize, entryExists,
 } from './db.js';
-import {
-  AUTH, MIN_PASSWORD, attachUser, cleanUsername, clearFailures, endSession, hashPassword, lockoutMs, mintIdentity,
-  noteFailure, requireIdentity, requireUser, sameOriginOnly, startSession, verifyPassword, withinLimit,
-} from './auth.js';
-import { numOrNull } from './util.js';
+import { numOrNull, sameOriginOnly } from './util.js';
 import { ppocrStatus, stopPpocr } from './ppocr.js';
 import { startDailySnapshots } from './prices.js';
 import { setCompletion } from './sets.js';
@@ -29,27 +24,22 @@ const app = express();
 app.use(express.json({ limit: '40mb' })); // base64 scans can be large
 app.use(express.static(join(here, '..', 'public')));
 
-// Liveness/readiness for container orchestration. Deliberately outside /api:
-// a probe arrives with no cookie, and the identity middleware below would mint a
-// guest for every check. Cheap by design — one COUNT over `user`, no writes.
-// A missing OCR engine is reported but is not a failure: the collection still
-// works, only scanning does not.
+// Liveness/readiness for container orchestration. Cheap by design — one COUNT
+// over the collection, no writes. A missing OCR engine is reported but is not a
+// failure: the collection still works, only scanning does not.
 app.get('/healthz', (req, res) => {
   try {
-    countUsers();
+    collectionSize();
     res.json({ ok: true, ocr: ppocrStatus().available });
   } catch (e) {
     res.status(503).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-// Every request gets an identity: a signed-in account or a guest (an anonymous
-// visitor with a real collection, so cards can be added before signing up).
+// The app answers on a port, so a page on another origin must not be able to
+// add or delete cards. No session rides along any more, so this is the whole
+// guard — see src/util.js.
 app.use('/api', sameOriginOnly);
-app.use(attachUser);
-// /api/auth/* is the way in, so it stays open; everything else under /api answers
-// for whoever the cookie points at, minting a guest when there is no cookie yet.
-app.use('/api', (req, res, next) => (req.path.startsWith('/auth') ? next() : requireIdentity(req, res, next)));
 
 /** Accept a base64 string or a `data:...;base64,...` URL. */
 function toBuffer(image) {
@@ -58,140 +48,6 @@ function toBuffer(image) {
   return Buffer.from(b64, 'base64');
 }
 
-function session(userId) {
-  // `node:sqlite` is synchronous; just wrap for clarity/mockability. Every call
-  // is scoped to one user id — that scoping is what keeps collections apart.
-  return {
-    // `copies` (default 1) adds that many of the same printing — duplicates
-    // live in `quantity`, one row per printing per user.
-    add(entry, copies = 1) { return addEntry(entry, userId, copies); },
-    list() { return listEntries(userId); },
-    remove(id) { return removeEntry(id, userId); },
-    increment(id, n = 1) { return incrementEntry(id, userId, n); },
-    decrement(id, n = 1) { return decrementEntry(id, userId, n); },
-    setQuantity(id, qty) { return setEntryQuantity(id, qty, userId); },
-    // Ownership, for answers that must be 404 rather than "changed nothing".
-    owns(id) { return ownsEntry(id, userId); },
-  };
-}
-
-// ---- Accounts, guests and sessions -----------------------------------------
-
-// Identity is the session cookie (see src/auth.js). These routes are the way in
-// and the way out; every other route under /api simply answers for req.userId,
-// which the middleware above resolved to an account, a guest, or a fresh guest.
-
-/** Create an account — or upgrade the guest that is already browsing. */
-app.post('/api/auth/register', (req, res) => {
-  try {
-    if (!AUTH.allowSignup) return res.status(403).json({ error: 'sign-ups are closed right now' });
-    if (!withinLimit(`register:${req.ip || ''}`, AUTH.signupsPerHour, 3600e3)) {
-      return res.status(429).json({ error: 'too many sign-ups from this address — try again later' });
-    }
-    const username = cleanUsername(req.body?.username);
-    const password = String(req.body?.password ?? '');
-    if (!username) return res.status(400).json({ error: 'pick a name of 3-32 letters, digits, ".", "-" or "_"' });
-    if (password.length < MIN_PASSWORD) {
-      return res.status(400).json({ error: `use a password of at least ${MIN_PASSWORD} characters` });
-    }
-    if (findUserByUsername(username)) return res.status(409).json({ error: 'that name is taken' });
-
-    const credentials = { username, ...hashPassword(password) };
-    // Who is asking, and what should this account own? A guest is upgraded in
-    // place, so the cards it already collected stay theirs; anyone else gets a
-    // brand-new account with an empty collection.
-    const visitor = req.user ?? null;
-    const isGuest = Number(visitor?.is_guest) === 1;
-    const user = visitor && isGuest
-      ? setUserCredentials(visitor.id, credentials)
-      : createUser({ name: username, ...credentials });
-    // Privilege just changed: retire the row's old sessions and hand this
-    // browser a fresh one.
-    deleteUserSessions(user.id);
-    startSession(res, user.id, AUTH.accountTtlDays);
-    res.json({ user: publicUser(user), collection: collectionSize(user.id) });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-/** Sign in. Anything collected as a guest comes along with it. */
-app.post('/api/auth/login', (req, res) => {
-  try {
-    const username = cleanUsername(req.body?.username) ?? String(req.body?.username ?? '').trim().toLowerCase();
-    const password = String(req.body?.password ?? '');
-    const key = `login:${req.ip || ''}:${username}`;
-    const wait = lockoutMs(key);
-    if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 1000)}s` });
-
-    const user = username ? findUserByUsername(username) : null;
-    if (!user || !verifyPassword(password, user)) {
-      noteFailure(key);
-      return res.status(401).json({ error: 'invalid username or password' });
-    }
-    clearFailures(key);
-
-    // Collected cards as a guest first? Fold them into the account (copies are
-    // summed, the earlier added_at wins) and drop the guest identity; `merged`
-    // is what lets the UI say how many cards came across. Other devices stay
-    // signed in: sessions are per device, and only a password change retires
-    // them all (see /api/auth/password below).
-    const merged = Number(req.user?.is_guest) === 1 ? mergeGuestInto(user.id, req.user.id) : null;
-    startSession(res, user.id, AUTH.accountTtlDays);
-    res.json({ user: publicUser(user), merged, collection: collectionSize(user.id) });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-/** Who am I? Pages ask this on load to show the account (or guest) badge. */
-app.get('/api/auth/me', (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'not signed in', user: null });
-  res.json({ user: publicUser(req.user), collection: collectionSize(req.user.id) });
-});
-
-/**
- * Start a guest collection before adding anything. Idempotent — a caller who
- * already has an identity gets the same one back — so the pages can call it on
- * load and know their collection is somewhere.
- */
-app.post('/api/auth/guest', (req, res) => {
-  try {
-    if (req.user) return res.json({ user: publicUser(req.user), collection: collectionSize(req.user.id) });
-    const minted = mintIdentity(req, res);
-    if (!minted.user) return res.status(minted.status).json({ error: minted.error });
-    res.json({ user: publicUser(minted.user), collection: collectionSize(minted.user.id) });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  try {
-    endSession(res, req.sessionTokenHash);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-/** Change the password; every other session of that account is retired. */
-app.post('/api/auth/password', requireUser, (req, res) => {
-  try {
-    const current = String(req.body?.current ?? '');
-    const next = String(req.body?.next ?? '');
-    if (!verifyPassword(current, req.user)) return res.status(403).json({ error: 'the current password is wrong' });
-    if (next.length < MIN_PASSWORD) {
-      return res.status(400).json({ error: `use a password of at least ${MIN_PASSWORD} characters` });
-    }
-    setUserPassword(req.user.id, hashPassword(next));
-    deleteUserSessions(req.user.id);
-    startSession(res, req.user.id, AUTH.accountTtlDays);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
 
 // ---- Auto-add: store the best match without a click ------------------------
 
@@ -237,7 +93,7 @@ function entryFromBody(b = {}) {
  * `foil` and `condition` are the UI's manual toggles for this scan; when set,
  * the copy lands as foil (own row, foil price) and/or as that grade (own row).
  */
-function autoAdd(candidates, userId, { foil = false, condition = undefined } = {}) {
+function autoAdd(candidates, { foil = false, condition = undefined } = {}) {
   const candidate = candidates?.[0] ?? null;
   if (!candidate) {
     return { added: false, candidate: null, reason: 'no-match', threshold: AUTO_ADD_MIN_LIKELIHOOD };
@@ -247,7 +103,7 @@ function autoAdd(candidates, userId, { foil = false, condition = undefined } = {
     return { added: false, candidate, likelihood, reason: 'low-likelihood', threshold: AUTO_ADD_MIN_LIKELIHOOD };
   }
   try {
-    const { entry, newCopy, addedCopies } = session(userId).add(entryFromBody({ ...candidate, foil, condition }));
+    const { entry, newCopy, addedCopies } = addEntry(entryFromBody({ ...candidate, foil, condition }));
     return { added: true, newCopy, addedCopies, candidate, likelihood, entry, foil: !!foil, condition: entry?.condition ?? null };
   } catch (e) {
     return { added: false, candidate, likelihood, reason: 'error', message: String(e?.message || e) };
@@ -293,7 +149,7 @@ app.post('/api/detect', async (req, res) => {
       // Camera mode: same card as the previous frame -> keep what the client
       // already shows, don't add anything again.
       : unchanged ? { added: false, candidate: null, reason: 'same-card' }
-      : autoAdd(shortlist, req.userId, { foil, condition });
+      : autoAdd(shortlist, { foil, condition });
 
     res.json({
       text,
@@ -342,8 +198,8 @@ app.get('/api/printings', async (req, res) => {
 });
 
 // ---- Collection CRUD -------------------------------------------------------
-// One row per printing per finish per user; duplicate copies of the same
-// finish live in `quantity`:
+// One row per printing per finish per grade; duplicate copies of the same
+// kind live in `quantity`:
 //   POST   /api/collection            { ..., copies?, foil? } -> add that many copies
 //   PATCH  /api/collection/:id        { copies } -> add that many (default 1)
 //   PUT    /api/collection/:id        { quantity } -> set exact count (0 deletes)
@@ -355,7 +211,7 @@ app.get('/api/printings', async (req, res) => {
 
 app.get('/api/collection', (req, res) => {
   try {
-    res.json(session(req.userId).list());
+    res.json(listEntries());
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -363,7 +219,7 @@ app.get('/api/collection', (req, res) => {
 
 app.post('/api/collection', (req, res) => {
   try {
-    res.json(session(req.userId).add(entryFromBody(req.body), req.body?.copies ?? 1));
+    res.json(addEntry(entryFromBody(req.body), req.body?.copies ?? 1));
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
   }
@@ -374,7 +230,7 @@ app.patch('/api/collection/:id', (req, res) => {
     // PATCH adds copies to an existing row: no lookup needed beforehand —
     // incrementEntry updates by id and returns null when the row is gone.
     const n = Math.max(1, Math.floor(Number(req.body?.copies ?? 1) || 1));
-    const entry = session(req.userId).increment(req.params.id, n);
+    const entry = incrementEntry(req.params.id, n);
     if (!entry) return res.status(404).json({ error: 'not found' });
     res.json({ entry, addedCopies: n });
   } catch (e) {
@@ -384,10 +240,10 @@ app.patch('/api/collection/:id', (req, res) => {
 
 app.put('/api/collection/:id', (req, res) => {
   try {
-    const s = session(req.userId);
-    // Someone else's id answers exactly like one that does not exist.
-    if (!s.owns(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const entry = s.setQuantity(req.params.id, req.body?.quantity);
+    // Checked first because `entry: null` means "the last copy is gone" here,
+    // which must not be confused with an id that never existed (404).
+    if (!entryExists(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const entry = setEntryQuantity(req.params.id, req.body?.quantity);
     res.json({ entry, removed: !entry });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
@@ -396,11 +252,9 @@ app.put('/api/collection/:id', (req, res) => {
 
 app.post('/api/collection/:id/decrement', (req, res) => {
   try {
-    const s = session(req.userId);
-    // `entry: null` means "you just removed your last copy", so ownership is
-    // checked separately to tell that apart from someone else's id (404).
-    if (!s.owns(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const entry = s.decrement(req.params.id, req.body?.n ?? 1);
+    // Same reason as PUT: a null answer is the last copy leaving, not a 404.
+    if (!entryExists(req.params.id)) return res.status(404).json({ error: 'not found' });
+    const entry = decrementEntry(req.params.id, req.body?.n ?? 1);
     res.json({ entry, removed: !entry });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
@@ -409,12 +263,10 @@ app.post('/api/collection/:id/decrement', (req, res) => {
 
 app.post('/api/collection/:id/foil', (req, res) => {
   try {
-    const s = session(req.userId);
-    // Someone else's id answers exactly like one that does not exist.
-    if (!s.owns(req.params.id)) return res.status(404).json({ error: 'not found' });
+    if (!entryExists(req.params.id)) return res.status(404).json({ error: 'not found' });
     // Flipping may merge this row into one already owned in the target finish,
     // so the answer is the *surviving* row (its id can differ from the id posted).
-    const entry = setEntryFoil(req.params.id, req.body?.foil === true || req.body?.foil === 1, req.userId);
+    const entry = setEntryFoil(req.params.id, req.body?.foil === true || req.body?.foil === 1);
     res.json({ entry });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
@@ -423,11 +275,10 @@ app.post('/api/collection/:id/foil', (req, res) => {
 
 app.post('/api/collection/:id/condition', (req, res) => {
   try {
-    const s = session(req.userId);
-    if (!s.owns(req.params.id)) return res.status(404).json({ error: 'not found' });
+    if (!entryExists(req.params.id)) return res.status(404).json({ error: 'not found' });
     // Re-grading may merge this row into one already owned at that grade, so the
     // answer is the *surviving* row (its id can differ from the id posted).
-    const entry = setEntryCondition(req.params.id, req.body?.condition, req.userId);
+    const entry = setEntryCondition(req.params.id, req.body?.condition);
     res.json({ entry });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
@@ -436,9 +287,9 @@ app.post('/api/collection/:id/condition', (req, res) => {
 
 app.delete('/api/collection/:id', (req, res) => {
   try {
-    // Deleting something that is not there (or not yours) is a 404, not a
-    // cheerful "removed" — the UI reloads from the server either way.
-    const { changes } = session(req.userId).remove(req.params.id);
+    // Deleting something that is not there is a 404, not a cheerful "removed" —
+    // the UI reloads from the server either way.
+    const { changes } = removeEntry(req.params.id);
     if (!changes) return res.status(404).json({ error: 'not found' });
     res.json({ changes });
   } catch (e) {
@@ -450,7 +301,7 @@ app.delete('/api/collection/:id', (req, res) => {
 
 app.get('/api/prices/portfolio', (req, res) => {
   try {
-    res.json(portfolioHistory(req.userId));
+    res.json(portfolioHistory());
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -471,7 +322,7 @@ app.get('/api/prices/:scryfall_id', (req, res) => {
 // the same number printed on the cards.
 app.get('/api/sets', async (req, res) => {
   try {
-    res.json(await setCompletion(req.userId));
+    res.json(await setCompletion());
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -482,18 +333,18 @@ app.get('/api/sets', async (req, res) => {
 // The retail benchmark is already in the database (Scryfall's `usd` is the
 // TCGplayer market price), so the comparison needs no credentials and no network
 // — it is arithmetic over the rows the collection page already fetched. The
-// settings are the assumptions that arithmetic rests on, and the user owns them.
+// settings are the assumptions that arithmetic rests on, and they are editable.
 
-/** The plan under the caller's own assumptions, plus the sentences that explain it. */
-function economicsFor(userId) {
-  const settings = loadSettings(userId);
-  const p = plan(listEntries(userId), settings);
+/** The plan under the saved assumptions, plus the sentences that explain it. */
+function economicsFor() {
+  const settings = loadSettings();
+  const p = plan(listEntries(), settings);
   return { settings, plan: p, insights: insights(p) };
 }
 
 app.get('/api/economics', (req, res) => {
   try {
-    res.json({ ...economicsFor(req.userId), platforms: PLATFORMS, defaults: DEFAULT_SETTINGS });
+    res.json({ ...economicsFor(), platforms: PLATFORMS, defaults: DEFAULT_SETTINGS });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -504,8 +355,8 @@ app.put('/api/economics/settings', (req, res) => {
   try {
     // Validation happens before anything is written: a bad number must not
     // become a stored NaN that makes every card look worthless.
-    const settings = saveSettings(req.userId, req.body ?? {});
-    const p = plan(listEntries(req.userId), settings);
+    const settings = saveSettings(req.body ?? {});
+    const p = plan(listEntries(), settings);
     res.json({ settings, plan: p, insights: insights(p) });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
@@ -530,7 +381,7 @@ app.get('/api/economics/export', (req, res) => {
     if (bucket !== 'list' && bucket !== 'box') {
       return res.status(400).json({ error: 'bucket must be "list" or "box"' });
     }
-    const { plan: p } = economicsFor(req.userId);
+    const { plan: p } = economicsFor();
     const built = spec.build(p.buckets[bucket].cards);
     const body = built.csv ?? built.text ?? '';
     const stamp = new Date().toISOString().slice(0, 10);
@@ -547,24 +398,8 @@ app.get('/api/economics/export', (req, res) => {
 
 const server = app.listen(PORT, () => {
   console.log(`MTG Collection Manager running at http://localhost:${PORT}`);
-  console.log(`auth: guests ${AUTH.allowGuests ? 'on' : 'off'} · sign-ups ${AUTH.allowSignup ? 'open' : 'closed'}`);
   // Keep the daily price history going while the server is up (idempotent/day).
   startDailySnapshots();
-  // Expired sessions and abandoned guest collections are housekeeping, not a
-  // request-time concern: clear them at boot, then every few hours.
-  const housekeeping = () => {
-    try {
-      const sessions = purgeExpiredSessions();
-      const guests = purgeGuests();
-      if (sessions || guests) {
-        console.log(`housekeeping: ${sessions} expired sessions, ${guests} guest collections removed`);
-      }
-    } catch (e) {
-      console.error('housekeeping failed:', String(e?.message || e));
-    }
-  };
-  housekeeping();
-  setInterval(housekeeping, 6 * 60 * 60 * 1000).unref?.();
 });
 
 // Shutdown. `docker stop` sends SIGTERM and then waits: answer in-flight

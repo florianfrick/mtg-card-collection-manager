@@ -14,7 +14,6 @@
       <h1 class="brand">MTG Collection Manager</h1>
       <p class="lede">Add cards to your collection with the live camera, an image upload, or a name search.</p>
     </div>
-    <p class="hero-account"><span id="who"></span></p>
   </header>
 
   <main class="layout">
@@ -119,7 +118,7 @@
   </main>
 
   <script type="module">
-    import { $, api, escapeHtml, currentUser, renderAccount, bootIdentity } from '/shared.js';
+    import { $, api, escapeHtml } from '/shared.js';
     import { createCamera } from '/camera.js';
 
     let currentImage = null;
@@ -545,8 +544,6 @@
 
     async function loadCollection() {
       const list = await api('/api/collection');
-      const me = await currentUser();
-      if (me) renderAccount(me);
       const copies = (c) => Math.max(1, Number(c.quantity ?? 1) || 1);
       const totalCopies = list.reduce((s, c) => s + copies(c), 0);
       $('#count').textContent = totalCopies;
@@ -669,7 +666,6 @@
 
     renderAuto();
     loadCollection().catch((e) => console.error(e));
-    bootIdentity().catch((e) => console.error(e));
   </script>
 </body>
 </html>

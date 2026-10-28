@@ -23,8 +23,8 @@ const round2 = (v) => Math.round(v * 100) / 100;
  * `total` and `percent` are null when Scryfall's set list is unavailable — the
  * owned counts are still correct, there is just nothing to measure them against.
  */
-export async function setCompletion(userId) {
-  const owned = setOwnership(userId);
+export async function setCompletion() {
+  const owned = setOwnership();
   if (!owned.length) return { sets: [], summary: { sets: 0, complete: 0, cards: 0, value: 0 } };
 
   const catalog = await allSets();

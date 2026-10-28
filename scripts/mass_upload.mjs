@@ -43,7 +43,7 @@ const RESET_DB =
 // node:sqlite keeps the handle for the life of the process, and src/db.js
 // re-creates the schema on import, so a fresh file = a fresh, empty collection.
 // Without a reset the existing rows stay; duplicates are detected via the
-// (user, printing, finish) UNIQUE constraint in addEntry().
+// (printing, finish, grade) UNIQUE constraint in addEntry().
 const dbPath = process.env.MTG_DB || join(root, 'data', 'mtg.db');
 if (RESET_DB) {
   rmSync(dbPath, { force: true });
@@ -54,13 +54,7 @@ if (RESET_DB) {
 
 // Imported after the optional reset (see above) — detect.js itself never touches the DB.
 const { detectCard } = await import('../src/detect.js');
-const { addEntry, listEntries, DEFAULT_USER_ID } = await import('../src/db.js');
-// Cards belong to an account. A database without one (say: a --reset run on a
-// fresh install) is not something this batch can invent — sign up first.
-if (DEFAULT_USER_ID == null) {
-  console.error('no account in the database — create one (sign up) before mass-uploading');
-  process.exit(1);
-}
+const { addEntry, listEntries } = await import('../src/db.js');
 
 // ---- 2. Collect the corpus -------------------------------------------------
 const files = readdirSync(SCANS_DIR)

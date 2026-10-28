@@ -14,13 +14,6 @@ services:
     stop_grace_period: 15s # src/index.js closes the DB and exits within ~8s
     ports:
       - "${MTG_PORT:-3000}:3000"
-    environment:
-      # Identity defaults. A public deployment wants sign-ups closed and secure
-      # cookies on; both are documented in README.md.
-      MTG_ALLOW_GUESTS: "${MTG_ALLOW_GUESTS:-true}"
-      MTG_ALLOW_SIGNUP: "${MTG_ALLOW_SIGNUP:-true}"
-      MTG_SECURE_COOKIES: "${MTG_SECURE_COOKIES:-false}"
-      MTG_SESSION_DAYS: "${MTG_SESSION_DAYS:-30}"
     volumes:
       - mtg-data:/data
       # To keep the database on the host instead, drop the line above and use a

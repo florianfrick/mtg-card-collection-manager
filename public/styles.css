@@ -117,7 +117,6 @@ h3::before {
   margin: 4px 0 22px;
 }
 .hero-main { min-width: 0; } /* the text column: brand, lede, side links */
-.hero-account { margin: 0 0 0 auto; flex-shrink: 0; } /* account controls, top right */
 .hero .lede {
   margin: 0.25em 0 0.6em;
   max-width: 64ch;
@@ -352,74 +351,6 @@ select {
   background-position: right 0.7em center;
 }
 select:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
-
-/* ---- Account slot (hero, top right) --------------------------------------- */
-/* Account-management controls live at the top right, away from the page's own
-   links. Signed out: a single Sign in button (the guest id is never shown).
-   Signed in: the account name with a Sign out segment beside it. */
-a.who-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4em;
-  padding: 0.36em 1.05em;
-  font-weight: 620;
-  color: #fff;
-  background: linear-gradient(180deg, #d56a41, var(--accent));
-  border: 1px solid transparent;
-  border-radius: 999px;
-  box-shadow: var(--shadow-sm), 0 8px 16px -12px rgba(150, 70, 35, 0.9);
-  transition: background .15s ease, box-shadow .15s ease, transform .06s ease;
-}
-a.who-btn:hover {
-  color: #fff;
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
-  box-shadow: var(--shadow-sm), 0 10px 18px -12px rgba(150, 70, 35, 1);
-}
-a.who-btn:active { transform: translateY(1px); }
-a.who-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-
-.who-account {
-  display: inline-flex;
-  align-items: stretch;
-  font-size: 0.92rem;
-  font-weight: 620;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-}
-.who-account .who-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45em;
-  padding: 0.38em 0.9em;
-}
-/* a small "active" dot, the way account menus mark the signed-in identity */
-.who-account .who-name::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 0 3px rgba(31, 122, 77, 0.16);
-}
-.who-account a#logout {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.38em 0.95em;
-  color: var(--muted);
-  border: none;
-  border-left: 1px solid var(--line);
-  border-radius: 0;
-  transition: color .15s ease, background .15s ease;
-}
-.who-account a#logout:hover {
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-}
-.who-account a#logout:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent-ring); }
 
 /* ---- Badges & small text ------------------------------------------------ */
 .badge {
@@ -715,50 +646,6 @@ summary::marker { color: var(--accent); }
   font-size: 15px;
   line-height: 1;
   border-radius: 50%;
-}
-
-/* ---- Sign in (login.html) -------------------------------------------------- */
-main.auth {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-  align-items: start;
-  margin: 18px 0;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-}
-main.auth > section { margin: 0; }
-main.auth label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0.7em 0;
-  font-size: 0.85rem;
-  color: var(--ink-soft);
-}
-main.auth input[type="text"],
-main.auth input[type="password"] {
-  font: inherit;
-  padding: 0.5em 1em;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
-main.auth input[type="text"]:focus,
-main.auth input[type="password"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-main.auth .warn[hidden] { display: none; }
-main.auth p { margin: 0.7em 0 0; }
-@media (max-width: 760px) {
-  main.auth { grid-template-columns: 1fr; }
 }
 
 /* ---- Price charts --------------------------------------------------------- */

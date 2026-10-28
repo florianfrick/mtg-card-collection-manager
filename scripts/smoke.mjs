@@ -18,18 +18,12 @@ function defaultScan() {
 
 const scan = process.argv[2] || defaultScan();
 
-// The API is per-identity now: every request carries the session cookie, and a
-// run that never signs in just works as a guest with its own collection.
-let cookie = '';
+// The app has one collection and no sign-in: a request needs no cookie.
 async function req(path, opts = {}) {
   const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
-  for (const c of res.headers.getSetCookie?.() ?? []) {
-    const pair = c.split(';')[0];
-    if (pair.startsWith('mtg_session=')) cookie = pair;
-  }
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(`${path} -> ${JSON.stringify(body || res.status)}`);
   return body;
@@ -39,20 +33,8 @@ const img = readFileSync(scan).toString('base64');
 const pct = (v) => Math.round((v ?? 0) * 100) + '%';
 const show = (e) => `${e.name} #${e.collector_number}`;
 
-// Identify before touching anything — a guest is enough (it is what a browser
-// gets on first load), and MTG_USER/MTG_PASS sign in to an account instead.
-if (process.env.MTG_USER && process.env.MTG_PASS) {
-  const login = await req('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username: process.env.MTG_USER, password: process.env.MTG_PASS }),
-  });
-  console.log('0) signed in as', login.user.username, '· collection', login.collection.rows, 'rows');
-  if (login.merged) console.log('   merged a guest collection:', JSON.stringify(login.merged));
-} else {
-  const { user, collection } = await req('/api/auth/guest', { method: 'POST' });
-  console.log('0) guest identity:', user.name, '· collection', collection.rows, 'rows');
-  if (!user.isGuest) throw new Error('expected a guest identity when no credentials were given');
-}
+// Nothing to sign into: the server answers for the one collection it owns.
+console.log('0) collection before the run:', (await req('/api/collection')).length, 'rows');
 
 console.log('1) POST /api/detect (scan:', scan, ')');
 const detect = await req('/api/detect', {
